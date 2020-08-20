@@ -105,7 +105,7 @@ CONFIG_CLEAN_FILES =
 CONFIG_CLEAN_VPATH_FILES =
 libucm_la_LIBADD =
 am_libucm_la_OBJECTS = utils.lo parser.lo ucm_cond.lo ucm_subs.lo \
-	main.lo
+	ucm_include.lo ucm_regex.lo main.lo
 libucm_la_OBJECTS = $(am_libucm_la_OBJECTS)
 AM_V_lt = $(am__v_lt_@AM_V@)
 am__v_lt_ = $(am__v_lt_@AM_DEFAULT_V@)
@@ -127,7 +127,8 @@ DEFAULT_INCLUDES = -I.@am__isrc@ -I$(top_builddir)/include
 depcomp = $(SHELL) $(top_srcdir)/depcomp
 am__maybe_remake_depfiles = depfiles
 am__depfiles_remade = ./$(DEPDIR)/main.Plo ./$(DEPDIR)/parser.Plo \
-	./$(DEPDIR)/ucm_cond.Plo ./$(DEPDIR)/ucm_subs.Plo \
+	./$(DEPDIR)/ucm_cond.Plo ./$(DEPDIR)/ucm_include.Plo \
+	./$(DEPDIR)/ucm_regex.Plo ./$(DEPDIR)/ucm_subs.Plo \
 	./$(DEPDIR)/utils.Plo
 am__mv = mv -f
 COMPILE = $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) \
@@ -308,7 +309,9 @@ top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
 EXTRA_LTLIBRARIES = libucm.la
-libucm_la_SOURCES = utils.c parser.c ucm_cond.c ucm_subs.c main.c
+libucm_la_SOURCES = utils.c parser.c ucm_cond.c ucm_subs.c ucm_include.c \
+		    ucm_regex.c main.c
+
 noinst_HEADERS = ucm_local.h
 AM_CPPFLAGS = -I$(top_srcdir)/include
 all: all-am
@@ -357,6 +360,8 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/main.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/parser.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/ucm_cond.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/ucm_include.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/ucm_regex.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/ucm_subs.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/utils.Plo@am__quote@ # am--include-marker
 
@@ -520,6 +525,8 @@ distclean: distclean-am
 		-rm -f ./$(DEPDIR)/main.Plo
 	-rm -f ./$(DEPDIR)/parser.Plo
 	-rm -f ./$(DEPDIR)/ucm_cond.Plo
+	-rm -f ./$(DEPDIR)/ucm_include.Plo
+	-rm -f ./$(DEPDIR)/ucm_regex.Plo
 	-rm -f ./$(DEPDIR)/ucm_subs.Plo
 	-rm -f ./$(DEPDIR)/utils.Plo
 	-rm -f Makefile
@@ -570,6 +577,8 @@ maintainer-clean: maintainer-clean-am
 		-rm -f ./$(DEPDIR)/main.Plo
 	-rm -f ./$(DEPDIR)/parser.Plo
 	-rm -f ./$(DEPDIR)/ucm_cond.Plo
+	-rm -f ./$(DEPDIR)/ucm_include.Plo
+	-rm -f ./$(DEPDIR)/ucm_regex.Plo
 	-rm -f ./$(DEPDIR)/ucm_subs.Plo
 	-rm -f ./$(DEPDIR)/utils.Plo
 	-rm -f Makefile

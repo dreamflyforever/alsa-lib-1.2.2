@@ -29,6 +29,41 @@
 #include <sys/stat.h>
 #include <limits.h>
 
+static char *rval_open_name(snd_use_case_mgr_t *uc_mgr)
+{
+	const char *name;
+	if (uc_mgr->conf_format < 3)
+		return NULL;
+	name = uc_mgr->card_name;
+	if (name) {
+		if (strncmp(name, "strict:", 7) == 0)
+			name += 7;
+		return strdup(name);
+	}
+	return NULL;
+}
+
+static char *rval_conf_topdir(snd_use_case_mgr_t *uc_mgr)
+{
+	const char *dir;
+
+	if (uc_mgr->conf_format < 3)
+		return NULL;
+	dir = uc_mgr_config_dir(uc_mgr->conf_format);
+	if (dir && dir[0])
+		return strdup(dir);
+	return NULL;
+}
+
+static char *rval_conf_dir(snd_use_case_mgr_t *uc_mgr)
+{
+	if (uc_mgr->conf_format < 3)
+		return NULL;
+	if (uc_mgr->conf_dir_name && uc_mgr->conf_dir_name[0])
+		return strdup(uc_mgr->conf_dir_name);
+	return NULL;
+}
+
 static char *rval_conf_name(snd_use_case_mgr_t *uc_mgr)
 {
 	if (uc_mgr->conf_file_name && uc_mgr->conf_file_name[0])
@@ -36,11 +71,28 @@ static char *rval_conf_name(snd_use_case_mgr_t *uc_mgr)
 	return NULL;
 }
 
+static char *get_card_number(struct ctl_list *ctl_list)
+{
+	char num[16];
+
+	if (ctl_list == NULL)
+		return strdup("");
+	snprintf(num, sizeof(num), "%i", snd_ctl_card_info_get_card(ctl_list->ctl_info));
+	return strdup(num);
+}
+
+static char *rval_card_number(snd_use_case_mgr_t *uc_mgr)
+{
+	if (uc_mgr->conf_format < 3)
+		return NULL;
+	return get_card_number(uc_mgr_get_master_ctl(uc_mgr));
+}
+
 static char *rval_card_id(snd_use_case_mgr_t *uc_mgr)
 {
 	struct ctl_list *ctl_list;
 
-	ctl_list = uc_mgr_get_one_ctl(uc_mgr);
+	ctl_list = uc_mgr_get_master_ctl(uc_mgr);
 	if (ctl_list == NULL)
 		return NULL;
 	return strdup(snd_ctl_card_info_get_id(ctl_list->ctl_info));
@@ -50,7 +102,7 @@ static char *rval_card_driver(snd_use_case_mgr_t *uc_mgr)
 {
 	struct ctl_list *ctl_list;
 
-	ctl_list = uc_mgr_get_one_ctl(uc_mgr);
+	ctl_list = uc_mgr_get_master_ctl(uc_mgr);
 	if (ctl_list == NULL)
 		return NULL;
 	return strdup(snd_ctl_card_info_get_driver(ctl_list->ctl_info));
@@ -60,7 +112,7 @@ static char *rval_card_name(snd_use_case_mgr_t *uc_mgr)
 {
 	struct ctl_list *ctl_list;
 
-	ctl_list = uc_mgr_get_one_ctl(uc_mgr);
+	ctl_list = uc_mgr_get_master_ctl(uc_mgr);
 	if (ctl_list == NULL)
 		return NULL;
 	return strdup(snd_ctl_card_info_get_name(ctl_list->ctl_info));
@@ -70,7 +122,7 @@ static char *rval_card_longname(snd_use_case_mgr_t *uc_mgr)
 {
 	struct ctl_list *ctl_list;
 
-	ctl_list = uc_mgr_get_one_ctl(uc_mgr);
+	ctl_list = uc_mgr_get_master_ctl(uc_mgr);
 	if (ctl_list == NULL)
 		return NULL;
 	return strdup(snd_ctl_card_info_get_longname(ctl_list->ctl_info));
@@ -80,10 +132,51 @@ static char *rval_card_components(snd_use_case_mgr_t *uc_mgr)
 {
 	struct ctl_list *ctl_list;
 
-	ctl_list = uc_mgr_get_one_ctl(uc_mgr);
+	ctl_list = uc_mgr_get_master_ctl(uc_mgr);
 	if (ctl_list == NULL)
 		return NULL;
 	return strdup(snd_ctl_card_info_get_components(ctl_list->ctl_info));
+}
+
+static struct ctl_list *get_ctl_list_by_name(snd_use_case_mgr_t *uc_mgr, const char *id)
+{
+	char *name, *index;
+	long idx = 0;
+
+	name = alloca(strlen(id) + 1);
+	strcpy(name, id);
+	index = strchr(name, '#');
+	if (index) {
+		*index = '\0';
+		if (safe_strtol(index + 1, &idx))
+			return NULL;
+	}
+	return uc_mgr_get_ctl_by_name(uc_mgr, name, idx);
+}
+
+static char *rval_card_number_by_name(snd_use_case_mgr_t *uc_mgr, const char *id)
+{
+	if (uc_mgr->conf_format < 3) {
+		uc_error("CardNumberByName substitution is supported in v3+ syntax");
+		return NULL;
+	}
+
+	return get_card_number(get_ctl_list_by_name(uc_mgr, id));
+}
+
+static char *rval_card_id_by_name(snd_use_case_mgr_t *uc_mgr, const char *id)
+{
+	struct ctl_list *ctl_list;
+
+	if (uc_mgr->conf_format < 3) {
+		uc_error("CardIdByName substitution is supported in v3+ syntax");
+		return NULL;
+	}
+
+	ctl_list = get_ctl_list_by_name(uc_mgr, id);
+	if (ctl_list == NULL)
+		return NULL;
+	return strdup(snd_ctl_card_info_get_id(ctl_list->ctl_info));
 }
 
 static char *rval_env(snd_use_case_mgr_t *uc_mgr ATTRIBUTE_UNUSED, const char *id)
@@ -146,6 +239,21 @@ static char *rval_sysfs(snd_use_case_mgr_t *uc_mgr ATTRIBUTE_UNUSED, const char 
 	return strdup(path);
 }
 
+static char *rval_var(snd_use_case_mgr_t *uc_mgr, const char *id)
+{
+	const char *v;
+
+	if (uc_mgr->conf_format < 3) {
+		uc_error("variable substitution is supported in v3+ syntax");
+		return NULL;
+	}
+
+	v = uc_mgr_get_variable(uc_mgr, id);
+	if (v)
+		return strdup(v);
+	return NULL;
+}
+
 #define MATCH_VARIABLE(name, id, fcn, empty_ok)				\
 	if (strncmp((name), (id), sizeof(id) - 1) == 0) { 		\
 		rval = fcn(uc_mgr);					\
@@ -154,22 +262,12 @@ static char *rval_sysfs(snd_use_case_mgr_t *uc_mgr ATTRIBUTE_UNUSED, const char 
 		goto __rval;						\
 	}
 
-#define MATCH_VARIABLE2(name, id, fcn)					\
+#define MATCH_VARIABLE2(name, id, fcn, empty_ok)			\
 	if (strncmp((name), (id), sizeof(id) - 1) == 0) {		\
 		idsize = sizeof(id) - 1;				\
-		tmp = strchr(value + idsize, '}');			\
-		if (tmp) {						\
-			rvalsize = tmp - (value + idsize);		\
-			if (rvalsize > sizeof(v2)) {			\
-				err = -ENOMEM;				\
-				goto __error;				\
-			}						\
-			strncpy(v2, value + idsize, rvalsize);		\
-			v2[rvalsize] = '\0';				\
-			idsize += rvalsize + 1;				\
-			rval = fcn(uc_mgr, v2);				\
-			goto __rval;					\
-		}							\
+		allow_empty = (empty_ok);				\
+		fcn2 = (fcn);						\
+		goto __match2;						\
 	}
 
 int uc_mgr_get_substituted_value(snd_use_case_mgr_t *uc_mgr,
@@ -178,7 +276,9 @@ int uc_mgr_get_substituted_value(snd_use_case_mgr_t *uc_mgr,
 {
 	size_t size, nsize, idsize, rvalsize, dpos = 0;
 	const char *tmp;
-	char *r, *nr, *rval, v2[32];
+	char *r, *nr, *rval, v2[48];
+	bool ignore_error, allow_empty;
+	char *(*fcn2)(snd_use_case_mgr_t *, const char *id);
 	int err;
 
 	if (value == NULL)
@@ -190,56 +290,101 @@ int uc_mgr_get_substituted_value(snd_use_case_mgr_t *uc_mgr,
 		return -ENOMEM;
 
 	while (*value) {
-		if (*value == '$' && *(value+1) == '{') {
-			bool allow_empty = false;
-
-			MATCH_VARIABLE(value, "${ConfName}", rval_conf_name, false);
-			MATCH_VARIABLE(value, "${CardId}", rval_card_id, false);
-			MATCH_VARIABLE(value, "${CardDriver}", rval_card_driver, false);
-			MATCH_VARIABLE(value, "${CardName}", rval_card_name, false);
-			MATCH_VARIABLE(value, "${CardLongName}", rval_card_longname, false);
-			MATCH_VARIABLE(value, "${CardComponents}", rval_card_components, true);
-			MATCH_VARIABLE2(value, "${env:", rval_env);
-			MATCH_VARIABLE2(value, "${sys:", rval_sysfs);
-			err = -EINVAL;
-			tmp = strchr(value, '}');
-			if (tmp) {
-				strncpy(r, value, tmp + 1 - value);
-				r[tmp + 1 - value] = '\0';
-				uc_error("variable '%s' is not known!", r);
-			} else {
-				uc_error("variable reference '%s' is not complete", value);
-			}
-			goto __error;
-__rval:
-			if (rval == NULL || (!allow_empty && rval[0] == '\0')) {
-				free(rval);
-				strncpy(r, value, idsize);
-				r[idsize] = '\0';
-				uc_error("variable '%s' is not defined in this context!", r);
-				err = -EINVAL;
-				goto __error;
-			}
-			value += idsize;
-			rvalsize = strlen(rval);
-			nsize = size + rvalsize - idsize;
-			if (nsize > size) {
-				nr = realloc(r, nsize);
-				if (nr == NULL) {
-					free(rval);
-					err = -ENOMEM;
-					goto __error;
-				}
-				size = nsize;
-				r = nr;
-			}
-			strcpy(r + dpos, rval);
-			dpos += rvalsize;
-			free(rval);
-		} else {
+		if (*value != '$') {
+__std:
 			r[dpos++] = *value;
 			value++;
+			continue;
 		}
+		ignore_error = false;
+		if (value[1] == '$' && value[2] == '{' && uc_mgr->conf_format >= 3) {
+			value++;
+			ignore_error = true;
+		} else if (value[1] != '{') {
+			goto __std;
+		}
+		allow_empty = false;
+		fcn2 = NULL;
+		MATCH_VARIABLE(value, "${OpenName}", rval_open_name, false);
+		MATCH_VARIABLE(value, "${ConfTopDir}", rval_conf_topdir, false);
+		MATCH_VARIABLE(value, "${ConfDir}", rval_conf_dir, false);
+		MATCH_VARIABLE(value, "${ConfName}", rval_conf_name, false);
+		MATCH_VARIABLE(value, "${CardNumber}", rval_card_number, true);
+		MATCH_VARIABLE(value, "${CardId}", rval_card_id, false);
+		MATCH_VARIABLE(value, "${CardDriver}", rval_card_driver, false);
+		MATCH_VARIABLE(value, "${CardName}", rval_card_name, false);
+		MATCH_VARIABLE(value, "${CardLongName}", rval_card_longname, false);
+		MATCH_VARIABLE(value, "${CardComponents}", rval_card_components, true);
+		MATCH_VARIABLE2(value, "${env:", rval_env, false);
+		MATCH_VARIABLE2(value, "${sys:", rval_sysfs, false);
+		MATCH_VARIABLE2(value, "${var:", rval_var, true);
+		MATCH_VARIABLE2(value, "${CardNumberByName:", rval_card_number_by_name, false);
+		MATCH_VARIABLE2(value, "${CardIdByName:", rval_card_id_by_name, false);
+__merr:
+		err = -EINVAL;
+		tmp = strchr(value, '}');
+		if (tmp) {
+			strncpy(r, value, tmp + 1 - value);
+			r[tmp + 1 - value] = '\0';
+			uc_error("variable '%s' is not known!", r);
+		} else {
+			uc_error("variable reference '%s' is not complete", value);
+		}
+		goto __error;
+__match2:
+		tmp = strchr(value + idsize, '}');
+		if (tmp) {
+			rvalsize = tmp - (value + idsize);
+			if (rvalsize >= sizeof(v2)) {
+				err = -ENOMEM;
+				goto __error;
+			}
+			strncpy(v2, value + idsize, rvalsize);
+			v2[rvalsize] = '\0';
+			idsize += rvalsize + 1;
+			if (*v2 == '$' && uc_mgr->conf_format >= 3) {
+				tmp = uc_mgr_get_variable(uc_mgr, v2 + 1);
+				if (tmp == NULL) {
+					uc_error("define '%s' is not reachable in this context!", v2 + 1);
+					rval = NULL;
+				} else {
+					rval = fcn2(uc_mgr, tmp);
+				}
+			} else {
+				rval = fcn2(uc_mgr, v2);
+			}
+			goto __rval;
+		}
+		goto __merr;
+__rval:
+		if (rval == NULL || (!allow_empty && rval[0] == '\0')) {
+			free(rval);
+			if (ignore_error) {
+				value += idsize;
+				continue;
+			}
+			strncpy(r, value, idsize);
+			r[idsize] = '\0';
+			uc_error("variable '%s' is not defined in this context!", r);
+			err = -EINVAL;
+			goto __error;
+		}
+		value += idsize;
+		rvalsize = strlen(rval);
+		nsize = size + rvalsize - idsize;
+		if (nsize > size) {
+			nr = realloc(r, nsize);
+			if (nr == NULL) {
+				free(rval);
+				err = -ENOMEM;
+				goto __error;
+			}
+			size = nsize;
+			r = nr;
+		}
+		strcpy(r + dpos, rval);
+		dpos += rvalsize;
+		free(rval);
 	}
 	r[dpos] = '\0';
 

@@ -44,6 +44,23 @@ static int if_eval_string(snd_use_case_mgr_t *uc_mgr, snd_config_t *eval)
 	char *s1, *s2;
 	int err;
 
+	if (uc_mgr->conf_format >= 3) {
+		err = get_string(eval, "Empty", &string1);
+		if (err < 0 && err != -ENOENT) {
+			uc_error("String error (If.Condition.Empty)");
+			return -EINVAL;
+		}
+
+		if (string1) {
+			err = uc_mgr_get_substituted_value(uc_mgr, &s1, string1);
+			if (err < 0)
+				return err;
+			err = s1 == NULL || s1[0] == '\0';
+			free(s1);
+			return err;
+		}
+	}
+
 	err = get_string(eval, "String1", &string1);
 	if (err < 0 && err != -ENOENT) {
 		uc_error("String error (If.Condition.String1)");
@@ -163,6 +180,7 @@ static int if_eval_regex_match(snd_use_case_mgr_t *uc_mgr, snd_config_t *eval)
 static int if_eval_control_exists(snd_use_case_mgr_t *uc_mgr, snd_config_t *eval)
 {
 	snd_ctl_t *ctl;
+	struct ctl_list *ctl_list;
 	const char *device = NULL, *ctldef, *enumval = NULL, *name;
 	snd_ctl_elem_id_t *elem_id;
 	snd_ctl_elem_info_t *elem_info;
@@ -211,10 +229,11 @@ static int if_eval_control_exists(snd_use_case_mgr_t *uc_mgr, snd_config_t *eval
 		err = uc_mgr_get_substituted_value(uc_mgr, &s, device);
 		if (err < 0)
 			return err;
-		err = uc_mgr_open_ctl(uc_mgr, &ctl, s);
+		err = uc_mgr_open_ctl(uc_mgr, &ctl_list, s, 1);
 		free(s);
 		if (err < 0)
 			return err;
+		ctl = ctl_list->ctl;
 	}
 
 	snd_ctl_elem_info_set_id(elem_info, elem_id);
@@ -266,11 +285,14 @@ static int if_eval(snd_use_case_mgr_t *uc_mgr, snd_config_t *eval)
 		return -EINVAL;
 	}
 
-	if (strcmp(type, "ControlExists") == 0)
-		return if_eval_control_exists(uc_mgr, eval);
+	if (strcmp(type, "AlwaysTrue") == 0)
+		return 1;
 
 	if (strcmp(type, "String") == 0)
 		return if_eval_string(uc_mgr, eval);
+
+	if (strcmp(type, "ControlExists") == 0)
+		return if_eval_control_exists(uc_mgr, eval);
 
 	if (strcmp(type, "RegexMatch") == 0)
 		return if_eval_regex_match(uc_mgr, eval);
@@ -347,72 +369,6 @@ static void config_dump(snd_config_t *cfg)
 }
 #endif
 
-static int compound_merge(const char *id,
-			  snd_config_t *dst, snd_config_t *src,
-			  snd_config_t *before, snd_config_t *after)
-{
-	snd_config_iterator_t i, next;
-	snd_config_t *n, *_before = NULL, *_after = NULL;
-	const char *s;
-	int err;
-
-	if (snd_config_get_type(src) != SND_CONFIG_TYPE_COMPOUND) {
-		uc_error("compound type expected for If True/False block");
-		return -EINVAL;
-	}
-
-	if (before) {
-		err = get_string(before, id, &s);
-		if (err < 0 && err != -ENOENT)
-			return err;
-		if (err == 0) {
-			err = snd_config_search(dst, s, &_before);
-			if (err < 0 && err != -ENOENT)
-				return err;
-		}
-	}
-	if (after) {
-		err = get_string(after, id, &s);
-		if (err < 0 && err != -ENOENT)
-			return err;
-		if (err == 0) {
-			err = snd_config_search(dst, s, &_after);
-			if (err < 0 && err != -ENOENT)
-				return err;
-		}
-	}
-
-	if (_before && _after) {
-		uc_error("defined both before and after identifiers in the If block");
-		return -EINVAL;
-	}
-
-	snd_config_for_each(i, next, src) {
-		n = snd_config_iterator_entry(i);
-		err = snd_config_remove(n);
-		if (err < 0)
-			return err;
-		if (_before) {
-			err = snd_config_add_before(_before, n);
-			if (err < 0)
-				return err;
-			_before = NULL;
-			_after = n;
-		} else if (_after) {
-			err = snd_config_add_after(_after, n);
-			if (err < 0)
-				return err;
-			_after = n;
-		} else {
-			err = snd_config_add(dst, n);
-			if (err < 0)
-				return err;
-		}
-	}
-
-	return 0;
-}
-
 /*
  * put back the result from all conditions to the parent
  */
@@ -420,9 +376,8 @@ int uc_mgr_evaluate_condition(snd_use_case_mgr_t *uc_mgr,
 			      snd_config_t *parent,
 			      snd_config_t *cond)
 {
-	snd_config_iterator_t i, i2, next, next2;
-	snd_config_t *a, *n, *n2, *parent2, *before, *after;
-	const char *id;
+	snd_config_iterator_t i, next;
+	snd_config_t *a, *n, *before, *after;
 	int err;
 
 	if (uc_mgr->conf_format < 2) {
@@ -443,38 +398,13 @@ int uc_mgr_evaluate_condition(snd_use_case_mgr_t *uc_mgr,
 			return err;
 		if (a == NULL)
 			continue;
-		err = snd_config_search(a, "If", &n2);
-		if (err < 0 && err != -ENOENT) {
-			uc_error("If block error (If)");
-			return -EINVAL;
-		} else if (err == 0) {
-			err = uc_mgr_evaluate_condition(uc_mgr, a, n2);
-			if (err < 0)
-				return err;
-			snd_config_delete(n2);
-		}
-		snd_config_for_each(i2, next2, a) {
-			n2 = snd_config_iterator_entry(i2);
-			err = snd_config_remove(n2);
-			if (err < 0)
-				return err;
-			err = snd_config_get_id(n2, &id);
-			if (err < 0) {
-__add:
-				err = snd_config_add(parent, n2);
-				if (err < 0)
-					return err;
-				continue;
-			} else {
-				err = snd_config_search(parent, id, &parent2);
-				if (err == -ENOENT)
-					goto __add;
-				err = compound_merge(id, parent2, n2, before, after);
-				if (err < 0)
-					return err;
-			}
-			snd_config_delete(n2);
-		}
+		err = uc_mgr_evaluate_inplace(uc_mgr, a);
+		if (err < 0)
+			return err;
+		err = uc_mgr_config_tree_merge(parent, a, before, after);
+		if (err < 0)
+			return err;
+		snd_config_delete(a);
 	}
 	return 0;
 }

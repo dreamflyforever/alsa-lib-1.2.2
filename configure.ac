@@ -1,6 +1,6 @@
 dnl Process this file with autoconf to produce a configure script.
 AC_PREREQ(2.59)
-AC_INIT(alsa-lib, 1.2.2)
+AC_INIT(alsa-lib, 1.2.3.2)
 
 AC_CONFIG_SRCDIR([src/control/control.c])
 AC_CONFIG_MACRO_DIR([m4])
@@ -423,7 +423,10 @@ if test "$build_python" = "yes" -a "$build_mixer_pymodules" = "yes"; then
   pythonlibs0=
   pythoninc0=
   if test "$build_python2" != "yes"; then
-    pythonlibs0=$(python3-config --libs)
+    pythonlibs0=$(python3-config --libs --embed 2> /dev/null)
+    if test -z "$pythonlibs0"; then
+      pythonlibs0=$(python3-config --libs)
+    fi
     pythoninc0=$(python3-config --includes)
   fi
   if test -z "$pythonlibs0"; then
@@ -512,6 +515,13 @@ if test -z "$gcc_have_atomics"; then
     [gcc_have_atomics=no])
 fi
 AC_MSG_RESULT($gcc_have_atomics)
+
+dnl check mmx register for pcm_dmix_i386
+
+AC_TRY_LINK([],
+    [__asm__ volatile ("" : : : "mm0");],
+    [AC_DEFINE([HAVE_MMX], "1", [MMX technology is enabled])],
+    [])
 
 PCM_PLUGIN_LIST="copy linear route mulaw alaw adpcm rate plug multi shm file null empty share meter hooks lfloat ladspa dmix dshare dsnoop asym iec958 softvol extplug ioplug mmap_emul"
 

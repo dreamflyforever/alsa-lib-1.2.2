@@ -62,66 +62,40 @@ static int parse_sequence(snd_use_case_mgr_t *uc_mgr,
 			  snd_config_t *cfg);
 
 /*
- * compose configuration file
+ * compose the absolute ucm filename
  */
-static void configuration_filename2(char *fn, size_t fn_len, int format,
-				    const char *dir, const char *file,
-				    const char *suffix)
+static void ucm_filename(char *fn, size_t fn_len, long version,
+			  const char *dir, const char *file)
 {
-	snprintf(fn, fn_len, "%s/ucm%s/%s/%s%s",
-		 snd_config_topdir(), format >= 2 ? "2" : "",
-		 dir, file, suffix);
+	const char *env = getenv(version > 1 ? ALSA_CONFIG_UCM2_VAR : ALSA_CONFIG_UCM_VAR);
+
+	if (env == NULL)
+		snprintf(fn, fn_len, "%s/%s/%s%s%s",
+			 snd_config_topdir(), version > 1 ? "ucm2" : "ucm",
+			 dir ?: "", dir ? "/" : "", file);
+	else
+		snprintf(fn, fn_len, "%s/%s%s%s",
+			 env, dir ?: "", dir ? "/" : "", file);
 }
 
-static void configuration_filename(snd_use_case_mgr_t *uc_mgr,
-				   char *fn, size_t fn_len,
-				   const char *dir, const char *file,
-				   const char *suffix)
+/*
+ *
+ */
+int uc_mgr_config_load_file(snd_use_case_mgr_t *uc_mgr,
+			     const char *file, snd_config_t **cfg)
 {
-	const char *env;
+	char filename[PATH_MAX];
+	int err;
 
-	if (uc_mgr->conf_format > 0) {
-		/* known format */
-		env = getenv(uc_mgr->conf_format >= 2 ? ALSA_CONFIG_UCM2_VAR :
-							ALSA_CONFIG_UCM_VAR);
-	} else {
-		/* auto-detect */
-		env = getenv(ALSA_CONFIG_UCM2_VAR);
-		if (env == NULL) {
-			env = getenv(ALSA_CONFIG_UCM_VAR);
-			if (env)
-				uc_mgr->conf_format = 1;
-		} else {
-			uc_mgr->conf_format = 2;
-		}
+	ucm_filename(filename, sizeof(filename), uc_mgr->conf_format,
+		     file[0] == '/' ? NULL : uc_mgr->conf_dir_name,
+		     file);
+	err = uc_mgr_config_load(uc_mgr->conf_format, filename, cfg);
+	if (err < 0) {
+		uc_error("error: failed to open file %s : %d", filename, -errno);
+		return err;
 	}
-	if (env) {
-		snprintf(fn, fn_len, "%s/%s/%s%s", env, dir, file, suffix);
-		return;
-	}
-
-	if (uc_mgr->conf_format > 0) {
-		configuration_filename2(fn, fn_len, uc_mgr->conf_format,
-					dir, file, suffix);
-		return;
-	}
-
-	configuration_filename2(fn, fn_len, 2, dir, file, suffix);
-	if (access(fn, R_OK) == 0) {
-		/* Found an ucm2 file, only look in the ucm2 dir from now on */
-		uc_mgr->conf_format = 2;
-		return;
-	}
-
-	configuration_filename2(fn, fn_len, 0, dir, file, suffix);
-	if (access(fn, R_OK) == 0) {
-		/* Found an ucm1 file, only look in the ucm dir from now on */
-		uc_mgr->conf_format = 1;
-		return;
-	}
-
-	/* make sure that the error message refers to the new path */
-	configuration_filename2(fn, fn_len, 2, dir, file, suffix);
+	return 0;
 }
 
 /*
@@ -130,7 +104,7 @@ static void configuration_filename(snd_use_case_mgr_t *uc_mgr,
 static char *replace_string(char **dst, const char *value)
 {
 	free(*dst);
-	*dst = strdup(value);
+	*dst = value ? strdup(value) : NULL;
 	return *dst;
 }
 
@@ -151,6 +125,80 @@ int parse_string(snd_config_t *n, char **res)
 }
 
 /*
+ * Parse string and substitute
+ */
+int parse_string_substitute(snd_use_case_mgr_t *uc_mgr,
+			    snd_config_t *n, char **res)
+{
+	const char *str;
+	char *s;
+	int err;
+
+	err = snd_config_get_string(n, &str);
+	if (err < 0)
+		return err;
+	err = uc_mgr_get_substituted_value(uc_mgr, &s, str);
+	if (err >= 0)
+		*res = s;
+	return err;
+}
+
+/*
+ * Parse string and substitute
+ */
+int parse_string_substitute3(snd_use_case_mgr_t *uc_mgr,
+			     snd_config_t *n, char **res)
+{
+	if (uc_mgr->conf_format < 3)
+		return parse_string(n, res);
+	return parse_string_substitute(uc_mgr, n, res);
+}
+
+/*
+ * Parse integer with substitution
+ */
+int parse_integer_substitute(snd_use_case_mgr_t *uc_mgr,
+			     snd_config_t *n, long *res)
+{
+	char *s1, *s2;
+	int err;
+
+	err = snd_config_get_ascii(n, &s1);
+	if (err < 0)
+		return err;
+	err = uc_mgr_get_substituted_value(uc_mgr, &s2, s1);
+	if (err >= 0)
+		err = safe_strtol(s2, res);
+	free(s2);
+	free(s1);
+	return err;
+}
+
+/*
+ * Parse integer with substitution
+ */
+int parse_integer_substitute3(snd_use_case_mgr_t *uc_mgr,
+			      snd_config_t *n, long *res)
+{
+	char *s1, *s2;
+	int err;
+
+	err = snd_config_get_ascii(n, &s1);
+	if (err < 0)
+		return err;
+	if (uc_mgr->conf_format < 3)
+		s2 = s1;
+	else
+		err = uc_mgr_get_substituted_value(uc_mgr, &s2, s1);
+	if (err >= 0)
+		err = safe_strtol(s2, res);
+	if (s1 != s2)
+		free(s2);
+	free(s1);
+	return err;
+}
+
+/*
  * Parse safe ID
  */
 int parse_is_name_safe(const char *name)
@@ -162,16 +210,143 @@ int parse_is_name_safe(const char *name)
 	return 1;
 }
 
-int parse_get_safe_id(snd_config_t *n, const char **id)
+int get_string3(snd_use_case_mgr_t *uc_mgr, const char *s1, char **s)
 {
+	if (uc_mgr->conf_format < 3) {
+		*s = strdup(s1);
+		if (*s == NULL)
+			return -ENOMEM;
+		return 0;
+	}
+	return uc_mgr_get_substituted_value(uc_mgr, s, s1);
+}
+
+int parse_get_safe_name(snd_use_case_mgr_t *uc_mgr, snd_config_t *n,
+			const char *alt, char **name)
+{
+	const char *id;
 	int err;
 
-	err = snd_config_get_id(n, id);
+	if (alt) {
+		id = alt;
+	} else {
+		err = snd_config_get_id(n, &id);
+		if (err < 0)
+			return err;
+	}
+	if (!parse_is_name_safe(id))
+		return -EINVAL;
+	return get_string3(uc_mgr, id, name);
+}
+
+/*
+ * Evaluate variable regex definitions (in-place delete)
+ */
+static int evaluate_regex(snd_use_case_mgr_t *uc_mgr,
+			  snd_config_t *cfg)
+{
+	snd_config_iterator_t i, next;
+	snd_config_t *d, *n;
+	const char *id;
+	int err;
+
+	err = snd_config_search(cfg, "DefineRegex", &d);
+	if (err == -ENOENT)
+		return 1;
 	if (err < 0)
 		return err;
-	if (!parse_is_name_safe((char *)(*id)))
+
+	if (snd_config_get_type(d) != SND_CONFIG_TYPE_COMPOUND) {
+		uc_error("compound type expected for DefineRegex");
 		return -EINVAL;
+	}
+
+	if (uc_mgr->conf_format < 3) {
+		uc_error("DefineRegex is supported in v3+ syntax");
+		return -EINVAL;
+	}
+
+	snd_config_for_each(i, next, d) {
+		n = snd_config_iterator_entry(i);
+		err = snd_config_get_id(n, &id);
+		if (err < 0)
+			return err;
+		err = uc_mgr_define_regex(uc_mgr, id, n);
+		if (err < 0)
+			return err;
+	}
+
+	snd_config_delete(d);
 	return 0;
+}
+
+/*
+ * Evaluate variable definitions (in-place delete)
+ */
+static int evaluate_define(snd_use_case_mgr_t *uc_mgr,
+			   snd_config_t *cfg)
+{
+	snd_config_iterator_t i, next;
+	snd_config_t *d, *n;
+	const char *id;
+	char *var, *s;
+	int err;
+
+	err = snd_config_search(cfg, "Define", &d);
+	if (err == -ENOENT)
+		return evaluate_regex(uc_mgr, cfg);
+	if (err < 0)
+		return err;
+
+	if (snd_config_get_type(d) != SND_CONFIG_TYPE_COMPOUND) {
+		uc_error("compound type expected for Define");
+		return -EINVAL;
+	}
+
+	if (uc_mgr->conf_format < 3) {
+		uc_error("Define is supported in v3+ syntax");
+		return -EINVAL;
+	}
+
+	snd_config_for_each(i, next, d) {
+		n = snd_config_iterator_entry(i);
+		err = snd_config_get_id(n, &id);
+		if (err < 0)
+			return err;
+		err = snd_config_get_ascii(n, &var);
+		if (err < 0)
+			return err;
+		err = uc_mgr_get_substituted_value(uc_mgr, &s, var);
+		free(var);
+		if (err < 0)
+			return err;
+		uc_mgr_set_variable(uc_mgr, id, s);
+		free(s);
+	}
+
+	snd_config_delete(d);
+
+	return evaluate_regex(uc_mgr, cfg);
+}
+
+/*
+ * Evaluate include (in-place)
+ */
+static int evaluate_include(snd_use_case_mgr_t *uc_mgr,
+			    snd_config_t *cfg)
+{
+	snd_config_t *n;
+	int err;
+
+	err = snd_config_search(cfg, "Include", &n);
+	if (err == -ENOENT)
+		return 1;
+	if (err < 0)
+		return err;
+
+	err = uc_mgr_evaluate_include(uc_mgr, cfg, n);
+	snd_config_delete(n);
+	return err;
 }
 
 /*
@@ -185,13 +360,41 @@ static int evaluate_condition(snd_use_case_mgr_t *uc_mgr,
 
 	err = snd_config_search(cfg, "If", &n);
 	if (err == -ENOENT)
-		return 0;
+		return 1;
 	if (err < 0)
 		return err;
 
 	err = uc_mgr_evaluate_condition(uc_mgr, cfg, n);
 	snd_config_delete(n);
 	return err;
+}
+
+/*
+ * In-place evaluate
+ */
+int uc_mgr_evaluate_inplace(snd_use_case_mgr_t *uc_mgr,
+			    snd_config_t *cfg)
+{
+	int err1 = 0, err2 = 0, err3 = 0;
+
+	while (err1 == 0 || err2 == 0 || err3 == 0) {
+		/* variables at first */
+		err1 = evaluate_define(uc_mgr, cfg);
+		if (err1 < 0)
+			return err1;
+		/* include at second */
+		err2 = evaluate_include(uc_mgr, cfg);
+		if (err2 < 0)
+			return err2;
+		/* include may define another variables */
+		/* conditions may depend on them */
+		if (err2 == 0)
+			continue;
+		err3 = evaluate_condition(uc_mgr, cfg);
+		if (err3 < 0)
+			return err3;
+	}
+	return 0;
 }
 
 /*
@@ -226,10 +429,10 @@ static int parse_transition(snd_use_case_mgr_t *uc_mgr,
 			return -ENOMEM;
 		INIT_LIST_HEAD(&tseq->transition_list);
 
-		tseq->name = strdup(id);
-		if (tseq->name == NULL) {
+		err = get_string3(uc_mgr, id, &tseq->name);
+		if (err < 0) {
 			free(tseq);
-			return -ENOMEM;
+			return err;
 		}
 	
 		err = parse_sequence(uc_mgr, &tseq->transition_list, n);
@@ -330,7 +533,7 @@ static int parse_device_list(snd_use_case_mgr_t *uc_mgr ATTRIBUTE_UNUSED,
 		sdev = calloc(1, sizeof(struct dev_list_node));
 		if (sdev == NULL)
 			return -ENOMEM;
-		err = parse_string(n, &sdev->name);
+		err = parse_string_substitute3(uc_mgr, n, &sdev->name);
 		if (err < 0) {
 			free(sdev);
 			return err;
@@ -403,21 +606,23 @@ struct use_case_device *find_component_dev(snd_use_case_mgr_t *uc_mgr,
  * disable sequence is needed by its parenet device.
  */
 static int parse_component_seq(snd_use_case_mgr_t *uc_mgr,
-			  snd_config_t *n, int enable,
-			  struct component_sequence *cmpt_seq)
+			       snd_config_t *n, int enable,
+			       struct component_sequence *cmpt_seq)
 {
-	const char *val;
+	char *val;
 	int err;
 
-	err = snd_config_get_string(n, &val);
+	err = parse_string_substitute3(uc_mgr, n, &val);
 	if (err < 0)
 		return err;
 
 	cmpt_seq->device = find_component_dev(uc_mgr, val);
 	if (!cmpt_seq->device) {
 		uc_error("error: Cannot find component device %s", val);
+		free(val);
 		return -EINVAL;
 	}
+	free(val);
 
 	/* Parent needs its enable or disable sequence */
 	cmpt_seq->enable = enable;
@@ -482,7 +687,7 @@ static int parse_sequence(snd_use_case_mgr_t *uc_mgr,
 
 		if (strcmp(cmd, "cdev") == 0) {
 			curr->type = SEQUENCE_ELEMENT_TYPE_CDEV;
-			err = parse_string(n, &curr->data.cdev);
+			err = parse_string_substitute3(uc_mgr, n, &curr->data.cdev);
 			if (err < 0) {
 				uc_error("error: cdev requires a string!");
 				return err;
@@ -492,7 +697,7 @@ static int parse_sequence(snd_use_case_mgr_t *uc_mgr,
 
 		if (strcmp(cmd, "cset") == 0) {
 			curr->type = SEQUENCE_ELEMENT_TYPE_CSET;
-			err = parse_string(n, &curr->data.cset);
+			err = parse_string_substitute3(uc_mgr, n, &curr->data.cset);
 			if (err < 0) {
 				uc_error("error: cset requires a string!");
 				return err;
@@ -526,7 +731,7 @@ static int parse_sequence(snd_use_case_mgr_t *uc_mgr,
 
 		if (strcmp(cmd, "cset-bin-file") == 0) {
 			curr->type = SEQUENCE_ELEMENT_TYPE_CSET_BIN_FILE;
-			err = parse_string(n, &curr->data.cset);
+			err = parse_string_substitute3(uc_mgr, n, &curr->data.cset);
 			if (err < 0) {
 				uc_error("error: cset-bin-file requires a string!");
 				return err;
@@ -536,7 +741,7 @@ static int parse_sequence(snd_use_case_mgr_t *uc_mgr,
 
 		if (strcmp(cmd, "cset-tlv") == 0) {
 			curr->type = SEQUENCE_ELEMENT_TYPE_CSET_TLV;
-			err = parse_string(n, &curr->data.cset);
+			err = parse_string_substitute3(uc_mgr, n, &curr->data.cset);
 			if (err < 0) {
 				uc_error("error: cset-tlv requires a string!");
 				return err;
@@ -546,7 +751,7 @@ static int parse_sequence(snd_use_case_mgr_t *uc_mgr,
 
 		if (strcmp(cmd, "usleep") == 0) {
 			curr->type = SEQUENCE_ELEMENT_TYPE_SLEEP;
-			err = snd_config_get_integer(n, &curr->data.sleep);
+			err = parse_integer_substitute3(uc_mgr, n, &curr->data.sleep);
 			if (err < 0) {
 				uc_error("error: usleep requires integer!");
 				return err;
@@ -556,7 +761,7 @@ static int parse_sequence(snd_use_case_mgr_t *uc_mgr,
 
 		if (strcmp(cmd, "msleep") == 0) {
 			curr->type = SEQUENCE_ELEMENT_TYPE_SLEEP;
-			err = snd_config_get_integer(n, &curr->data.sleep);
+			err = parse_integer_substitute3(uc_mgr, n, &curr->data.sleep);
 			if (err < 0) {
 				uc_error("error: msleep requires integer!");
 				return err;
@@ -567,7 +772,7 @@ static int parse_sequence(snd_use_case_mgr_t *uc_mgr,
 
 		if (strcmp(cmd, "exec") == 0) {
 			curr->type = SEQUENCE_ELEMENT_TYPE_EXEC;
-			err = parse_string(n, &curr->data.exec);
+			err = parse_string_substitute3(uc_mgr, n, &curr->data.exec);
 			if (err < 0) {
 				uc_error("error: exec requires a string!");
 				return err;
@@ -629,8 +834,8 @@ static int parse_value(snd_use_case_mgr_t *uc_mgr ATTRIBUTE_UNUSED,
 		return -EINVAL;
 	}
 
-	/* in-place condition evaluation */
-	err = evaluate_condition(uc_mgr, cfg);
+	/* in-place evaluation */
+	err = uc_mgr_evaluate_inplace(uc_mgr, cfg);
 	if (err < 0)
 		return err;
 
@@ -653,7 +858,7 @@ static int parse_value(snd_use_case_mgr_t *uc_mgr ATTRIBUTE_UNUSED,
 			}
 			break;
 		case SND_CONFIG_TYPE_STRING:
-			err = parse_string(n, &s);
+			err = parse_string_substitute(uc_mgr, n, &s);
 			if (err < 0) {
 				uc_error("error: unable to parse a string for id '%s'!", id);
 				return err;
@@ -716,41 +921,35 @@ static int parse_value(snd_use_case_mgr_t *uc_mgr ATTRIBUTE_UNUSED,
  * Both are optional.
  */
 static int parse_modifier(snd_use_case_mgr_t *uc_mgr,
-		snd_config_t *cfg,
-		void *data1,
-		void *data2)
+			  snd_config_t *cfg,
+			  void *data1, void *data2)
 {
 	struct use_case_verb *verb = data1;
 	struct use_case_modifier *modifier;
-	const char *name;
+	char *name;
 	snd_config_iterator_t i, next;
 	snd_config_t *n;
 	int err;
 
-	if (data2) {
-		name = data2;
-		if (!parse_is_name_safe(name))
-			return -EINVAL;
-	}
-	else {
-		if (parse_get_safe_id(cfg, &name) < 0)
-			return -EINVAL;
-	}
+	if (parse_get_safe_name(uc_mgr, cfg, data2, &name) < 0)
+		return -EINVAL;
 
 	/* allocate modifier */
 	modifier = calloc(1, sizeof(*modifier));
-	if (modifier == NULL)
+	if (modifier == NULL) {
+		free(name);
 		return -ENOMEM;
+	}
 	INIT_LIST_HEAD(&modifier->enable_list);
 	INIT_LIST_HEAD(&modifier->disable_list);
 	INIT_LIST_HEAD(&modifier->transition_list);
 	INIT_LIST_HEAD(&modifier->dev_list.list);
 	INIT_LIST_HEAD(&modifier->value_list);
 	list_add_tail(&modifier->list, &verb->modifier_list);
-	modifier->name = strdup(name);
+	modifier->name = name;
 
-	/* in-place condition evaluation */
-	err = evaluate_condition(uc_mgr, cfg);
+	/* in-place evaluation */
+	err = uc_mgr_evaluate_inplace(uc_mgr, cfg);
 	if (err < 0)
 		return err;
 
@@ -761,7 +960,7 @@ static int parse_modifier(snd_use_case_mgr_t *uc_mgr,
 			continue;
 
 		if (strcmp(id, "Comment") == 0) {
-			err = parse_string(n, &modifier->comment);
+			err = parse_string_substitute3(uc_mgr, n, &modifier->comment);
 			if (err < 0) {
 				uc_error("error: failed to get modifier comment");
 				return err;
@@ -869,39 +1068,33 @@ static int parse_modifier(snd_use_case_mgr_t *uc_mgr,
  */
 static int parse_device(snd_use_case_mgr_t *uc_mgr,
 			snd_config_t *cfg,
-			void *data1,
-			void *data2)
+			void *data1, void *data2)
 {
 	struct use_case_verb *verb = data1;
-	const char *name;
+	char *name;
 	struct use_case_device *device;
 	snd_config_iterator_t i, next;
 	snd_config_t *n;
 	int err;
 
-	if (data2) {
-		name = data2;
-		if (!parse_is_name_safe(name))
-			return -EINVAL;
-	}
-	else {
-		if (parse_get_safe_id(cfg, &name) < 0)
-			return -EINVAL;
-	}
+	if (parse_get_safe_name(uc_mgr, cfg, data2, &name) < 0)
+		return -EINVAL;
 
 	device = calloc(1, sizeof(*device));
-	if (device == NULL)
+	if (device == NULL) {
+		free(name);
 		return -ENOMEM;
+	}
 	INIT_LIST_HEAD(&device->enable_list);
 	INIT_LIST_HEAD(&device->disable_list);
 	INIT_LIST_HEAD(&device->transition_list);
 	INIT_LIST_HEAD(&device->dev_list.list);
 	INIT_LIST_HEAD(&device->value_list);
 	list_add_tail(&device->list, &verb->device_list);
-	device->name = strdup(name);
+	device->name = name;
 
-	/* in-place condition evaluation */
-	err = evaluate_condition(uc_mgr, cfg);
+	/* in-place evaluation */
+	err = uc_mgr_evaluate_inplace(uc_mgr, cfg);
 	if (err < 0)
 		return err;
 
@@ -912,7 +1105,7 @@ static int parse_device(snd_use_case_mgr_t *uc_mgr,
 			continue;
 
 		if (strcmp(id, "Comment") == 0) {
-			err = parse_string(n, &device->comment);
+			err = parse_string_substitute3(uc_mgr, n, &device->comment);
 			if (err < 0) {
 				uc_error("error: failed to get device comment");
 				return err;
@@ -994,13 +1187,14 @@ static int parse_device(snd_use_case_mgr_t *uc_mgr,
  * RenameDevice."Speaker1" "Speaker"
  * RemoveDevice."Speaker2" "Speaker2"
  */
-static int parse_dev_name_list(snd_config_t *cfg,
+static int parse_dev_name_list(snd_use_case_mgr_t *uc_mgr,
+			       snd_config_t *cfg,
 			       struct list_head *list)
 {
 	snd_config_t *n;
 	snd_config_iterator_t i, next;
 	const char *id, *name1;
-	char *name2;
+	char *name1s, *name2;
 	struct ucm_dev_name *dev;
 	snd_config_iterator_t pos;
 	int err;
@@ -1019,8 +1213,13 @@ static int parse_dev_name_list(snd_config_t *cfg,
 		if (snd_config_get_id(n, &name1) < 0)
 			return -EINVAL;
 
-		err = parse_string(n, &name2);
+		err = get_string3(uc_mgr, name1, &name1s);
+		if (err < 0)
+			return err;
+
+		err = parse_string_substitute3(uc_mgr, n, &name2);
 		if (err < 0) {
+			free(name1s);
 			uc_error("error: failed to get target device name for '%s'", name1);
 			return err;
 		}
@@ -1028,15 +1227,20 @@ static int parse_dev_name_list(snd_config_t *cfg,
 		/* skip duplicates */
 		list_for_each(pos, list) {
 			dev = list_entry(pos, struct ucm_dev_name, list);
-			if (strcmp(dev->name1, name1) == 0) {
+			if (strcmp(dev->name1, name1s) == 0) {
 				free(name2);
+				free(name1s);
 				return 0;
 			}
 		}
 
+		free(name1s);
+
 		dev = calloc(1, sizeof(*dev));
-		if (dev == NULL)
+		if (dev == NULL) {
+			free(name2);
 			return -ENOMEM;
+		}
 		dev->name1 = strdup(name1);
 		if (dev->name1 == NULL) {
 			free(dev);
@@ -1176,7 +1380,7 @@ static int verb_device_management(struct use_case_verb *verb)
 	}
 
 	/* remove devices */
-	list_for_each(pos, &verb->rename_list) {
+	list_for_each(pos, &verb->remove_list) {
 		dev = list_entry(pos, struct ucm_dev_name, list);
 		err = uc_mgr_remove_device(verb, dev->name2);
 		if (err < 0) {
@@ -1238,8 +1442,8 @@ static int parse_verb(snd_use_case_mgr_t *uc_mgr,
 	snd_config_t *n;
 	int err;
 	
-	/* in-place condition evaluation */
-	err = evaluate_condition(uc_mgr, cfg);
+	/* in-place evaluation */
+	err = uc_mgr_evaluate_inplace(uc_mgr, cfg);
 	if (err < 0)
 		return err;
 
@@ -1312,7 +1516,6 @@ static int parse_verb_file(snd_use_case_mgr_t *uc_mgr,
 	snd_config_t *n;
 	struct use_case_verb *verb;
 	snd_config_t *cfg;
-	char filename[PATH_MAX];
 	int err;
 
 	/* allocate verb */
@@ -1342,17 +1545,12 @@ static int parse_verb_file(snd_use_case_mgr_t *uc_mgr,
 	}
 
 	/* open Verb file for reading */
-	configuration_filename(uc_mgr, filename, sizeof(filename),
-			       uc_mgr->conf_dir_name, file, "");
-	err = uc_mgr_config_load(uc_mgr->conf_format, filename, &cfg);
-	if (err < 0) {
-		uc_error("error: failed to open verb file %s : %d",
-			filename, -errno);
+	err = uc_mgr_config_load_file(uc_mgr, file, &cfg);
+	if (err < 0)
 		return err;
-	}
 
-	/* in-place condition evaluation */
-	err = evaluate_condition(uc_mgr, cfg);
+	/* in-place evaluation */
+	err = uc_mgr_evaluate_inplace(uc_mgr, cfg);
 	if (err < 0)
 		return err;
 
@@ -1400,7 +1598,7 @@ static int parse_verb_file(snd_use_case_mgr_t *uc_mgr,
 
 		/* device renames */
 		if (strcmp(id, "RenameDevice") == 0) {
-			err = parse_dev_name_list(n, &verb->rename_list);
+			err = parse_dev_name_list(uc_mgr, n, &verb->rename_list);
 			if (err < 0) {
 				uc_error("error: %s failed to parse device rename",
 						file);
@@ -1410,7 +1608,7 @@ static int parse_verb_file(snd_use_case_mgr_t *uc_mgr,
 
 		/* device remove */
 		if (strcmp(id, "RemoveDevice") == 0) {
-			err = parse_dev_name_list(n, &verb->remove_list);
+			err = parse_dev_name_list(uc_mgr, n, &verb->remove_list);
 			if (err < 0) {
 				uc_error("error: %s failed to parse device remove",
 						file);
@@ -1450,23 +1648,24 @@ static int parse_master_section(snd_use_case_mgr_t *uc_mgr, snd_config_t *cfg,
 {
 	snd_config_iterator_t i, next;
 	snd_config_t *n;
-	const char *use_case_name, *file = NULL, *comment = NULL;
+	char *use_case_name, *file = NULL, *comment = NULL;
 	int err;
-
-	if (snd_config_get_id(cfg, &use_case_name) < 0) {
-		uc_error("unable to get name for use case section");
-		return -EINVAL;
-	}
 
 	if (snd_config_get_type(cfg) != SND_CONFIG_TYPE_COMPOUND) {
 		uc_error("compound type expected for use case section");
 		return -EINVAL;
 	}
 
-	/* in-place condition evaluation */
-	err = evaluate_condition(uc_mgr, cfg);
-	if (err < 0)
+	err = parse_get_safe_name(uc_mgr, cfg, NULL, &use_case_name);
+	if (err < 0) {
+		uc_error("unable to get name for use case section");
 		return err;
+	}
+
+	/* in-place evaluation */
+	err = uc_mgr_evaluate_inplace(uc_mgr, cfg);
+	if (err < 0)
+		goto __error;
 
 	/* parse master config sections */
 	snd_config_for_each(i, next, cfg) {
@@ -1477,20 +1676,20 @@ static int parse_master_section(snd_use_case_mgr_t *uc_mgr, snd_config_t *cfg,
 
 		/* get use case verb file name */
 		if (strcmp(id, "File") == 0) {
-			err = snd_config_get_string(n, &file);
+			err = parse_string_substitute3(uc_mgr, n, &file);
 			if (err < 0) {
 				uc_error("failed to get File");
-				return err;
+				goto __error;
 			}
 			continue;
 		}
 
 		/* get optional use case comment */
 		if (strncmp(id, "Comment", 7) == 0) {
-			err = snd_config_get_string(n, &comment);
+			err = parse_string_substitute3(uc_mgr, n, &comment);
 			if (err < 0) {
 				uc_error("error: failed to get Comment");
-				return err;
+				goto __error;
 			}
 			continue;
 		}
@@ -1503,11 +1702,38 @@ static int parse_master_section(snd_use_case_mgr_t *uc_mgr, snd_config_t *cfg,
 	/* do we have both use case name and file ? */
 	if (!file) {
 		uc_error("error: use case missing file");
-		return -EINVAL;
+		err = -EINVAL;
+		goto __error;
 	}
 
 	/* parse verb file */
-	return parse_verb_file(uc_mgr, use_case_name, comment, file);
+	err = parse_verb_file(uc_mgr, use_case_name, comment, file);
+
+__error:
+	free(use_case_name);
+	free(file);
+	free(comment);
+	return err;
+}
+
+/*
+ * parse controls which should be run only at initial boot
+ */
+static int parse_controls_boot(snd_use_case_mgr_t *uc_mgr, snd_config_t *cfg)
+{
+	int err;
+
+	if (!list_empty(&uc_mgr->once_list)) {
+		uc_error("Once list is not empty");
+		return -EINVAL;
+	}
+	err = parse_sequence(uc_mgr, &uc_mgr->once_list, cfg);
+	if (err < 0) {
+		uc_error("Unable to parse BootSequence");
+		return err;
+	}
+
+	return 0;
 }
 
 /*
@@ -1516,7 +1742,7 @@ static int parse_master_section(snd_use_case_mgr_t *uc_mgr, snd_config_t *cfg,
 static int parse_controls(snd_use_case_mgr_t *uc_mgr, snd_config_t *cfg)
 {
 	int err;
-	
+
 	if (!list_empty(&uc_mgr->default_list)) {
 		uc_error("Default list is not empty");
 		return -EINVAL;
@@ -1526,7 +1752,7 @@ static int parse_controls(snd_use_case_mgr_t *uc_mgr, snd_config_t *cfg)
 		uc_error("Unable to parse SectionDefaults");
 		return err;
 	}
-	
+
 	return 0;
 }
 
@@ -1558,11 +1784,16 @@ static int parse_controls(snd_use_case_mgr_t *uc_mgr, snd_config_t *cfg)
  *	CaptureCTL "hw:CARD=0"
  * }
  *
+ * # The initial boot (run once) configuration.
+ *
+ * BootSequence [
+ *      cset "name='Master Playback Switch',index=2 1,1"
+ *	cset "name='Master Playback Volume',index=2 25,25"
+ * ]
+ *
  * # This file also stores the default sound card state.
  *
  * SectionDefaults [
- *	cset "name='Master Playback Switch',index=2 1,1"
- *	cset "name='Master Playback Volume',index=2 25,25"
  *	cset "name='Master Mono Playback',index=1 0"
  *	cset "name='Master Mono Playback Volume',index=1 0"
  *	cset "name='PCM Switch',index=2 1,1"
@@ -1603,10 +1834,11 @@ static int parse_master_file(snd_use_case_mgr_t *uc_mgr, snd_config_t *cfg)
 		}
 		/* delete this field to avoid strcmp() call in the loop */
 		snd_config_delete(n);
+		uc_mgr->conf_format = l;
 	}
 
-	/* in-place condition evaluation */
-	err = evaluate_condition(uc_mgr, cfg);
+	/* in-place evaluation */
+	err = uc_mgr_evaluate_inplace(uc_mgr, cfg);
 	if (err < 0)
 		return err;
 
@@ -1631,6 +1863,14 @@ static int parse_master_file(snd_use_case_mgr_t *uc_mgr, snd_config_t *cfg)
 			err = parse_compound(uc_mgr, n,
 					     parse_master_section,
 					     NULL, NULL);
+			if (err < 0)
+				return err;
+			continue;
+		}
+
+		/* find default control values section (first boot only) */
+		if (strcmp(id, "BootSequence") == 0) {
+			err = parse_controls_boot(uc_mgr, n);
 			if (err < 0)
 				return err;
 			continue;
@@ -1662,34 +1902,24 @@ static int parse_master_file(snd_use_case_mgr_t *uc_mgr, snd_config_t *cfg)
 /* get the card info */
 static int get_card_info(snd_use_case_mgr_t *mgr,
 			 const char *ctl_name,
-			 snd_ctl_t **_handle,
-			 snd_ctl_card_info_t *info)
+			 snd_ctl_card_info_t **info)
 {
-	snd_ctl_t *handle;
+	struct ctl_list *ctl_list;
 	int err;
 
-	*_handle = NULL;
-
-	err = uc_mgr_open_ctl(mgr, &handle, ctl_name);
+	err = uc_mgr_open_ctl(mgr, &ctl_list, ctl_name, 0);
 	if (err < 0)
 		return err;
 
-	err = snd_ctl_card_info(handle, info);
-	if (err < 0) {
-		uc_error("control hardware info (%s): %s", ctl_name, snd_strerror(err));
-	} else {
-		*_handle = handle;
-	}
-
+	if (info)
+		*info = ctl_list->ctl_info;
 	return err;
 }
 
-/* find the card in the local machine and store the card long name */
-static int get_card_long_name(snd_use_case_mgr_t *mgr, char *longname)
+/* find the card in the local machine */
+static int get_by_card_name(snd_use_case_mgr_t *mgr, const char *card_name)
 {
-	const char *card_name = mgr->card_name;
 	int card, err;
-	snd_ctl_t *ctl;
 	snd_ctl_card_info_t *info;
 	const char *_driver, *_name, *_long_name;
 
@@ -1704,11 +1934,11 @@ static int get_card_long_name(snd_use_case_mgr_t *mgr, char *longname)
 	while (card >= 0) {
 		char name[32];
 
-		/* most probably, we do not need to cache all CTL devices here */
+		/* clear the list, keep the only one CTL device */
 		uc_mgr_free_ctl_list(mgr);
 
 		sprintf(name, "hw:%d", card);
-		err = get_card_info(mgr, name, &ctl, info);
+		err = get_card_info(mgr, name, &info);
 
 		if (err == 0) {
 			_driver = snd_ctl_card_info_get_driver(info);
@@ -1716,10 +1946,8 @@ static int get_card_long_name(snd_use_case_mgr_t *mgr, char *longname)
 			_long_name = snd_ctl_card_info_get_longname(info);
 			if (!strcmp(card_name, _driver) ||
 			    !strcmp(card_name, _name) ||
-			    !strcmp(card_name, _long_name)) {
-				snd_strlcpy(longname, _long_name, MAX_CARD_LONG_NAME);
+			    !strcmp(card_name, _long_name))
 				return 0;
-			}
 		}
 
 		if (snd_card_next(&card) < 0) {
@@ -1734,126 +1962,245 @@ static int get_card_long_name(snd_use_case_mgr_t *mgr, char *longname)
 }
 
 /* set the driver name and long name by the card ctl name */
-static int get_by_card(snd_use_case_mgr_t *mgr, const char *ctl_name, char *longname)
+static inline int get_by_card(snd_use_case_mgr_t *mgr, const char *ctl_name)
 {
-	snd_ctl_t *ctl;
-	snd_ctl_card_info_t *info;
-	const char *_driver, *_long_name;
-	int err;
-
-	snd_ctl_card_info_alloca(&info);
-
-	err = get_card_info(mgr, ctl_name, &ctl, info);
-	if (err)
-		return err;
-
-	_driver = snd_ctl_card_info_get_driver(info);
-	if (replace_string(&mgr->conf_dir_name, _driver) == NULL)
-		return -ENOMEM;
-	_long_name = snd_ctl_card_info_get_longname(info);
-	snd_strlcpy(longname, _long_name, MAX_CARD_LONG_NAME);
-
-	return 0;
+	return get_card_info(mgr, ctl_name, NULL);
 }
 
-static int load_master_config(snd_use_case_mgr_t *uc_mgr,
-			      const char *card_name, snd_config_t **cfg, int longname)
+static int parse_toplevel_path(snd_use_case_mgr_t *uc_mgr,
+			       char *filename,
+			       snd_config_t *cfg)
 {
-	char filename[PATH_MAX];
+	snd_config_iterator_t i, next, i2, next2;
+	snd_config_t *n, *n2;
+	const char *id;
+	char *dir = NULL, *file = NULL, fn[PATH_MAX];
+	long version;
 	int err;
 
-	if (strnlen(card_name, MAX_CARD_LONG_NAME) == MAX_CARD_LONG_NAME) {
-		uc_error("error: invalid card name %s (at most %d chars)",
-			 card_name, MAX_CARD_LONG_NAME - 1);
+	if (snd_config_get_type(cfg) != SND_CONFIG_TYPE_COMPOUND) {
+		uc_error("compound type expected for UseCasePath node");
 		return -EINVAL;
 	}
 
-	uc_mgr->conf_format = 0;
-	if (longname) {
-		if (getenv(ALSA_CONFIG_UCM2_VAR) || !getenv(ALSA_CONFIG_UCM_VAR)) {
-			uc_mgr->conf_format = 2;
-			configuration_filename(uc_mgr, filename, sizeof(filename),
-					       uc_mgr->conf_dir_name, card_name, ".conf");
-			if (access(filename, R_OK) == 0)
-				goto __load;
+	/* parse use case path config sections */
+	snd_config_for_each(i, next, cfg) {
+		n = snd_config_iterator_entry(i);
+
+		if (snd_config_get_type(n) != SND_CONFIG_TYPE_COMPOUND) {
+			uc_error("compound type expected for UseCasePath.something node");
+			return -EINVAL;
 		}
-		/* try the old ucm directory */
-		uc_mgr->conf_format = 1;
-		configuration_filename(uc_mgr, filename, sizeof(filename),
-				       card_name, card_name, ".conf");
-		if (access(filename, R_OK) != 0)
-			return -ENOENT;
-	} else {
-		configuration_filename(uc_mgr, filename, sizeof(filename),
-				       card_name, card_name, ".conf");
+
+			if (snd_config_get_id(n, &id) < 0)
+				continue;
+
+		version = 2;
+
+		/* parse use case path config sections */
+		snd_config_for_each(i2, next2, n) {
+
+			n2 = snd_config_iterator_entry(i2);
+			if (snd_config_get_id(n2, &id) < 0)
+				continue;
+
+			if (strcmp(id, "Version") == 0) {
+				err = parse_integer_substitute(uc_mgr, n2, &version);
+				if (err < 0) {
+					uc_error("unable to parse UcmDirectory");
+					goto __error;
+				}
+				if (version < 1 || version > 2) {
+					uc_error("Version must be 1 or 2");
+					err = -EINVAL;
+					goto __error;
+				}
+				continue;
+			}
+
+			if (strcmp(id, "Directory") == 0) {
+				err = parse_string_substitute(uc_mgr, n2, &dir);
+				if (err < 0) {
+					uc_error("unable to parse Directory");
+					goto __error;
+				}
+				continue;
+			}
+
+			if (strcmp(id, "File") == 0) {
+				err = parse_string_substitute(uc_mgr, n2, &file);
+				if (err < 0) {
+					uc_error("unable to parse File");
+					goto __error;
+				}
+				continue;
+			}
+
+			uc_error("unknown UseCasePath field %s", id);
+		}
+
+		if (dir == NULL) {
+			uc_error("Directory is not defined in %s!", filename);
+			goto __next;
+		}
+		if (file == NULL) {
+			uc_error("File is not defined in %s!", filename);
+			goto __next;
+		}
+
+		ucm_filename(fn, sizeof(fn), version, dir, file);
+		if (access(fn, R_OK) == 0) {
+			if (replace_string(&uc_mgr->conf_dir_name, dir) == NULL) {
+				err = -ENOMEM;
+				goto __error;
+			}
+			if (replace_string(&uc_mgr->conf_file_name, file) == NULL) {
+				err = -ENOMEM;
+				goto __error;
+			}
+			strncpy(filename, fn, PATH_MAX);
+			uc_mgr->conf_format = version;
+			goto __ok;
+		}
+
+__next:
+		free(file);
+		free(dir);
+		dir = NULL;
+		file = NULL;
 	}
 
-__load:
+	err = -ENOENT;
+	goto __error;
+
+__ok:
+	err = 0;
+__error:
+	free(file);
+	free(dir);
+	return err;
+}
+
+static int parse_toplevel_config(snd_use_case_mgr_t *uc_mgr,
+				 char *filename,
+				 snd_config_t *cfg)
+{
+	snd_config_iterator_t i, next;
+	snd_config_t *n;
+	const char *id;
+	long l;
+	int err;
+
+	if (snd_config_get_type(cfg) != SND_CONFIG_TYPE_COMPOUND) {
+		uc_error("compound type expected for toplevel file");
+		return -EINVAL;
+	}
+
+	err = snd_config_search(cfg, "Syntax", &n);
+	if (err < 0) {
+		uc_error("Syntax field not found in %s", filename);
+		return -EINVAL;
+	}
+	err = snd_config_get_integer(n, &l);
+	if (err < 0) {
+		uc_error("Syntax field is invalid in %s", filename);
+		return err;
+	}
+	if (l < 2 || l > SYNTAX_VERSION_MAX) {
+		uc_error("Incompatible syntax %d in %s", l, filename);
+		return -EINVAL;
+	}
+	/* delete this field to avoid strcmp() call in the loop */
+	snd_config_delete(n);
+	uc_mgr->conf_format = l;
+
+	/* in-place evaluation */
+	err = uc_mgr_evaluate_inplace(uc_mgr, cfg);
+	if (err < 0)
+		return err;
+
+	/* parse toplevel config sections */
+	snd_config_for_each(i, next, cfg) {
+
+		n = snd_config_iterator_entry(i);
+		if (snd_config_get_id(n, &id) < 0)
+			continue;
+
+		if (strcmp(id, "UseCasePath") == 0) {
+			err = parse_toplevel_path(uc_mgr, filename, n);
+			if (err == 0)
+				return err;
+			continue;
+		}
+
+		uc_error("uknown toplevel field %s", id);
+	}
+
+	return -ENOENT;
+}
+
+static int load_toplevel_config(snd_use_case_mgr_t *uc_mgr,
+				snd_config_t **cfg)
+{
+	char filename[PATH_MAX];
+	snd_config_t *tcfg;
+	int err;
+
+	ucm_filename(filename, sizeof(filename), 2, NULL, "ucm.conf");
+
+	if (access(filename, R_OK) != 0) {
+		uc_error("Unable to find the top-level configuration file '%s'.", filename);
+		return -ENOENT;
+	}
+
+	err = uc_mgr_config_load(2, filename, &tcfg);
+	if (err < 0)
+		goto __error;
+
+	/* filename is shared for function input and output! */
+	err = parse_toplevel_config(uc_mgr, filename, tcfg);
+	snd_config_delete(tcfg);
+	if (err < 0)
+		goto __error;
+
 	err = uc_mgr_config_load(uc_mgr->conf_format, filename, cfg);
 	if (err < 0) {
 		uc_error("error: could not parse configuration for card %s",
-				card_name);
-		return err;
+				uc_mgr->card_name);
+		goto __error;
 	}
 
-	if (replace_string(&uc_mgr->conf_file_name, card_name) == NULL)
-		return -ENOMEM;
-
 	return 0;
+
+__error:
+	return err;
 }
 
-/* load master use case file for sound card
- *
- * The same ASoC machine driver can be shared by many different devices.
- * For user space to differentiate them and get the best device-specific
- * configuration, ASoC machine drivers may use the DMI info
- * (vendor-product-version-board) as the card long name. And user space can
- * define configuration files like longnamei/longname.conf for a specific device.
- *
- * This function will try to find the card in the local machine and get its
- * long name, then load the file longname/longname.conf to get the best
- * device-specific configuration. If the card is not found in the local
- * machine or the device-specific file is not available, fall back to load
- * the default configuration file name/name.conf.
+/* load master use case file for sound card based on rules in ucm2/ucm.conf
  */
 int uc_mgr_import_master_config(snd_use_case_mgr_t *uc_mgr)
 {
 	snd_config_t *cfg;
-	const char *name = uc_mgr->card_name;
-	char longname[MAX_CARD_LONG_NAME];
+	const char *name;
 	int err;
 
-	if (replace_string(&uc_mgr->conf_dir_name, uc_mgr->card_name) == NULL)
-		return -ENOMEM;
-
+	name = uc_mgr->card_name;
 	if (strncmp(name, "hw:", 3) == 0) {
-		err = get_by_card(uc_mgr, name, longname);
-		if (err == 0)
-			goto __longname;
-		uc_error("card '%s' is not valid", name);
-		goto __error;
+		err = get_by_card(uc_mgr, name);
+		if (err < 0) {
+			uc_error("card '%s' is not valid", name);
+			goto __error;
+		}
 	} else if (strncmp(name, "strict:", 7)) {
-		err = get_card_long_name(uc_mgr, longname);
-		if (err == 0) { /* load file that matches the card long name */
-__longname:
-			err = load_master_config(uc_mgr, longname, &cfg, 1);
-		}
-
-		if (err == 0) {
-			/* got device-specific file that matches the card long name */
-			if (uc_mgr->conf_format < 2)
-				snd_strlcpy(uc_mgr->conf_dir_name, longname,
-					    sizeof(uc_mgr->conf_dir_name));
-			goto __parse;
-		}
+		/* do not handle the error here */
+		/* we can refer the virtual UCM config */
+		get_by_card_name(uc_mgr, name);
 	}
 
-	/* standard path */
-	err = load_master_config(uc_mgr, uc_mgr->conf_dir_name, &cfg, 0);
+	err = load_toplevel_config(uc_mgr, &cfg);
 	if (err < 0)
 		goto __error;
 
-__parse:
 	err = parse_master_file(uc_mgr, cfg);
 	snd_config_delete(cfg);
 	if (err < 0) {
@@ -1865,7 +2212,7 @@ __parse:
 
 __error:
 	uc_mgr_free_ctl_list(uc_mgr);
-	uc_mgr->conf_dir_name[0] = '\0';
+	replace_string(&uc_mgr->conf_dir_name, NULL);
 	return err;
 }
 
@@ -1910,7 +2257,7 @@ static int is_component_directory(const char *dir)
  */
 int uc_mgr_scan_master_configs(const char **_list[])
 {
-	char filename[PATH_MAX], dfl[PATH_MAX];
+	char filename[PATH_MAX], dfl[PATH_MAX], fn[FILENAME_MAX];
 	char *env = getenv(ALSA_CONFIG_UCM2_VAR);
 	const char **list, *d_name;
 	snd_config_t *cfg, *c;
@@ -1967,8 +2314,11 @@ int uc_mgr_scan_master_configs(const char **_list[])
 		if (is_component_directory(d_name))
 			continue;
 
-		configuration_filename2(filename, sizeof(filename), 2,
-					d_name, d_name, ".conf");
+		snprintf(fn, sizeof(fn), "%s.conf", d_name);
+		ucm_filename(filename, sizeof(filename), 2, d_name, fn);
+		if (eaccess(filename, R_OK))
+			continue;
+
 		err = uc_mgr_config_load(2, filename, &cfg);
 		if (err < 0)
 			goto __err;
