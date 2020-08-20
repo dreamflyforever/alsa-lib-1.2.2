@@ -212,6 +212,7 @@ libasound.so.2 libasound2 #MINVER#
  snd_config_imake_real@ALSA_0.9 1.0.16
  snd_config_imake_safe_string@ALSA_0.9 1.1.0
  snd_config_imake_string@ALSA_0.9 1.0.16
+ snd_config_is_array@ALSA_0.9 1.2.3
  snd_config_iterator_end@ALSA_0.9 1.0.16
  snd_config_iterator_entry@ALSA_0.9 1.0.16
  snd_config_iterator_first@ALSA_0.9 1.0.16
@@ -458,6 +459,7 @@ libasound.so.2 libasound2 #MINVER#
  snd_dlclose@ALSA_0.9 1.0.16
  snd_dlopen@ALSA_0.9 1.0.16
  snd_dlopen@ALSA_1.1.6 1.1.6
+ snd_dlpath@ALSA_0.9 1.2.3
  snd_dlsym@ALSA_0.9 1.0.16
  snd_err_msg@ALSA_0.9 1.0.16
  snd_func_card_driver@ALSA_0.9 1.0.16
