@@ -29,7 +29,7 @@ alsa-lib (1.2.2-2.1) unstable; urgency=medium
 
   [ Matthias Klose ]
   * Non-maintainer upload.
-  
+
   [ Sebastien Bacher ]
   * debian/patches/python3.8.diff:
     - fix the build with python 3.8
