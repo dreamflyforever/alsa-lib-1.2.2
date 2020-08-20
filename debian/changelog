@@ -4,6 +4,7 @@ alsa-lib (1.2.3.2-1) UNRELEASED; urgency=medium
   * Acknowledge all previous NMUs.
   * Drop python 3.8 patch, now included upstream.
   * Update symbols file with two newly added symbols.
+  * Move to debhelper compat v13.
 
  -- Jordi Mallach <jordi@debian.org>  Thu, 20 Aug 2020 19:41:40 +0200
 
