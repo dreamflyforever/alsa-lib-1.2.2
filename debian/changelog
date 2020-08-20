@@ -1,4 +1,4 @@
-alsa-lib (1.2.3.2-1) UNRELEASED; urgency=medium
+alsa-lib (1.2.3.2-1) unstable; urgency=medium
 
   * New upstream release.
   * Acknowledge all previous NMUs.
@@ -6,7 +6,7 @@ alsa-lib (1.2.3.2-1) UNRELEASED; urgency=medium
   * Update symbols file with two newly added symbols.
   * Move to debhelper compat v13.
 
- -- Jordi Mallach <jordi@debian.org>  Thu, 20 Aug 2020 19:41:40 +0200
+ -- Jordi Mallach <jordi@debian.org>  Thu, 20 Aug 2020 20:18:24 +0200
 
 alsa-lib (1.2.2-2.3) unstable; urgency=medium
 
