@@ -1,16 +1,21 @@
-# Description: fixes the build with python 3.8
-# Upstream: https://github.com/alsa-project/alsa-lib/issues/33
-# Author: Matthias Klose
-Index: b/configure.ac
-===================================================================
---- a/configure.ac
-+++ b/configure.ac
-@@ -423,7 +423,7 @@ if test "$build_python" = "yes" -a "$bui
+Description: fixes the build with python 3.8
+Upstream: https://github.com/alsa-project/alsa-lib/issues/33
+Author: Matthias Klose
+Bug-Debian: https://bugs.debian.org/953568
+Reviewed-By: Francisco Vilmar Cardoso Ruviaro <francisco.ruviaro@riseup.net>
+Last-Update: 2020-06-10
+
+--- alsa-lib-1.2.2.orig/configure.ac
++++ alsa-lib-1.2.2/configure.ac
+@@ -423,7 +423,10 @@ if test "$build_python" = "yes" -a "$bui
    pythonlibs0=
    pythoninc0=
    if test "$build_python2" != "yes"; then
 -    pythonlibs0=$(python3-config --libs)
-+    pythonlibs0=$(python3-config --libs --embed)
++    pythonlibs0=$(python3-config --libs --embed 2> /dev/null)
++    if test -z "$pythonlibs0"; then
++      pythonlibs0=$(python3-config --libs)
++    fi
      pythoninc0=$(python3-config --includes)
    fi
    if test -z "$pythonlibs0"; then
