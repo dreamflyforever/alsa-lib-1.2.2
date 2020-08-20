@@ -27,6 +27,10 @@
  *
  */
 
+#if defined(__GNUC__) && __GNUC__ < 5 && defined(__PIC__)
+#  define BOUNDED_RBX
+#endif
+
 /*
  *  MMX optimized
  */
@@ -35,8 +39,9 @@ static void MIX_AREAS_16(unsigned int size,
 			 volatile signed int *sum, size_t dst_step,
 			 size_t src_step, size_t sum_step)
 {
+#ifdef BOUNDED_RBX
 	unsigned long long old_rbx;
-
+#endif
 	/*
 	 *  RSI - src
 	 *  RDI - dst
@@ -47,19 +52,26 @@ static void MIX_AREAS_16(unsigned int size,
 	 */
 	__asm__ __volatile__ (
 		"\n"
-
-		"\tmovq %%rbx, %7\n"
+#ifdef BOUNDED_RBX
+		"\tmovq %%rbx, %[old_rbx]\n"
+#endif
 		/*
 		 *  initialization, load RSI, RDI, RBX registers
 		 */
-		"\tmovq %1, %%rdi\n"
-		"\tmovq %2, %%rsi\n"
-		"\tmovq %3, %%rbx\n"
+#ifndef _ILP32
+		"\tmovq %[dst], %%rdi\n"
+		"\tmovq %[src], %%rsi\n"
+		"\tmovq %[sum], %%rbx\n"
+#else
+		"\tmovl %[dst], %%edi\n"
+		"\tmovl %[src], %%esi\n"
+		"\tmovl %[sum], %%ebx\n"
+#endif
 
 		/*
 		 * while (size-- > 0) {
 		 */
-		"\tcmpl $0, %0\n"
+		"\tcmpl $0, %[size]\n"
 		"jz 6f\n"
 
 		"\t.p2align 4,,15\n"
@@ -103,22 +115,41 @@ static void MIX_AREAS_16(unsigned int size,
 		/*
 		 * while (size-- > 0)
 		 */
-		"\tadd %4, %%rdi\n"
-		"\tadd %5, %%rsi\n"
-		"\tadd %6, %%rbx\n"
-		"\tdecl %0\n"
+#ifndef _ILP32
+		"\taddq %[dst_step], %%rdi\n"
+		"\taddq %[src_step], %%rsi\n"
+		"\taddq %[sum_step], %%rbx\n"
+#else
+		"\taddl %[dst_step], %%edi\n"
+		"\taddl %[src_step], %%esi\n"
+		"\taddl %[sum_step], %%ebx\n"
+#endif
+		"\tdecl %[size]\n"
 		"\tjnz 1b\n"
 
 		"6:"
-		
-		"\temms\n"
-		"\tmovq %7, %%rbx\n"
 
-		: /* no output regs */
-		: "m" (size), "m" (dst), "m" (src),
-		  "m" (sum), "m" (dst_step), "m" (src_step),
-		  "m" (sum_step), "m" (old_rbx)
-		: "rsi", "rdi", "edx", "ecx", "eax"
+		"\temms\n"
+#ifdef BOUNDED_RBX
+		"\tmovq %[old_rbx], %%rbx\n"
+#endif
+		: [size] "+&rm" (size)
+#ifdef BOUNDED_RBX
+		  , [old_rbx] "=m" (old_rbx)
+#endif
+	        : [dst] "m" (dst), [src] "m" (src), [sum] "m" (sum),
+		  [dst_step] "im" (dst_step),  [src_step] "im" (src_step),
+		  [sum_step] "im" (sum_step)
+		: "rsi", "rdi", "edx", "ecx", "eax", "memory", "cc"
+#ifndef BOUNDED_RBX
+		  , "rbx"
+#endif
+#ifdef HAVE_MMX
+		  , "mm0"
+#else
+		  , "st", "st(1)", "st(2)", "st(3)",
+		  "st(4)", "st(5)", "st(6)", "st(7)"
+#endif
 	);
 }
 
@@ -130,8 +161,9 @@ static void MIX_AREAS_32(unsigned int size,
 			 volatile signed int *sum, size_t dst_step,
 			 size_t src_step, size_t sum_step)
 {
+#ifdef BOUNDED_RBX
 	unsigned long long old_rbx;
-
+#endif
 	/*
 	 *  RSI - src
 	 *  RDI - dst
@@ -142,19 +174,26 @@ static void MIX_AREAS_32(unsigned int size,
 	 */
 	__asm__ __volatile__ (
 		"\n"
-
-		"\tmovq %%rbx, %7\n"
+#ifdef BOUNDED_RBX
+		"\tmovq %%rbx, %[old_rbx]\n"
+#endif
 		/*
-		 *  initialization, load ESI, EDI, EBX registers
+		 *  initialization, load RSI, RDI, RBX registers
 		 */
-		"\tmovq %1, %%rdi\n"
-		"\tmovq %2, %%rsi\n"
-		"\tmovq %3, %%rbx\n"
+#ifndef _ILP32
+		"\tmovq %[dst], %%rdi\n"
+		"\tmovq %[src], %%rsi\n"
+		"\tmovq %[sum], %%rbx\n"
+#else
+		"\tmovl %[dst], %%edi\n"
+		"\tmovl %[src], %%esi\n"
+		"\tmovl %[sum], %%ebx\n"
+#endif
 
 		/*
 		 * while (size-- > 0) {
 		 */
-		"\tcmpl $0, %0\n"
+		"\tcmpl $0, %[size]\n"
 		"jz 6f\n"
 
 		"\t.p2align 4,,15\n"
@@ -220,20 +259,33 @@ static void MIX_AREAS_32(unsigned int size,
 		/*
 		 * while (size-- > 0)
 		 */
-		"\tadd %4, %%rdi\n"
-		"\tadd %5, %%rsi\n"
-		"\tadd %6, %%rbx\n"
-		"\tdecl %0\n"
+#ifndef _ILP32
+		"\taddq %[dst_step], %%rdi\n"
+		"\taddq %[src_step], %%rsi\n"
+		"\taddq %[sum_step], %%rbx\n"
+#else
+		"\taddl %[dst_step], %%edi\n"
+		"\taddl %[src_step], %%esi\n"
+		"\taddl %[sum_step], %%ebx\n"
+#endif
+		"\tdecl %[size]\n"
 		"\tjnz 1b\n"
-		
-		"6:"
-		"\tmovq %7, %%rbx\n"
 
-		: /* no output regs */
-		: "m" (size), "m" (dst), "m" (src),
-		  "m" (sum), "m" (dst_step), "m" (src_step),
-		  "m" (sum_step), "m" (old_rbx)
-		: "rsi", "rdi", "edx", "ecx", "eax"
+		"6:"
+#ifdef BOUNDED_RBX
+		"\tmovq %[old_rbx], %%rbx\n"
+#endif
+		: [size] "+&rm" (size)
+#ifdef BOUNDED_RBX
+		  , [old_rbx] "=m" (old_rbx)
+#endif
+	        : [dst] "m" (dst), [src] "m" (src), [sum] "m" (sum),
+		  [dst_step] "im" (dst_step),  [src_step] "im" (src_step),
+		  [sum_step] "im" (sum_step)
+		: "rsi", "rdi", "edx", "ecx", "eax", "memory", "cc"
+#ifndef BOUNDED_RBX
+		  , "rbx"
+#endif
 	);
 }
 
@@ -245,8 +297,9 @@ static void MIX_AREAS_24(unsigned int size,
 			 volatile signed int *sum, size_t dst_step,
 			 size_t src_step, size_t sum_step)
 {
+#ifdef BOUNDED_RBX
 	unsigned long long old_rbx;
-
+#endif
 	/*
 	 *  RSI - src
 	 *  RDI - dst
@@ -257,19 +310,26 @@ static void MIX_AREAS_24(unsigned int size,
 	 */
 	__asm__ __volatile__ (
 		"\n"
-
-		"\tmovq %%rbx, %7\n"
+#ifdef BOUNDED_RBX
+		"\tmovq %%rbx, %[old_rbx]\n"
+#endif
 		/*
-		 *  initialization, load ESI, EDI, EBX registers
+		 *  initialization, load RSI, RDI, RBX registers
 		 */
-		"\tmovq %1, %%rdi\n"
-		"\tmovq %2, %%rsi\n"
-		"\tmovq %3, %%rbx\n"
+#ifndef _ILP32
+		"\tmovq %[dst], %%rdi\n"
+		"\tmovq %[src], %%rsi\n"
+		"\tmovq %[sum], %%rbx\n"
+#else
+		"\tmovl %[dst], %%edi\n"
+		"\tmovl %[src], %%esi\n"
+		"\tmovl %[sum], %%ebx\n"
+#endif
 
 		/*
 		 * while (size-- > 0) {
 		 */
-		"\tcmpl $0, %0\n"
+		"\tcmpl $0, %[size]\n"
 		"jz 6f\n"
 
 		"\t.p2align 4,,15\n"
@@ -316,26 +376,43 @@ static void MIX_AREAS_24(unsigned int size,
 		"\tmovw %%ax, (%%rdi)\n"
 		"\tshrl $16, %%eax\n"
 		"\tmovb %%al, 2(%%rdi)\n"
-	
+
 		"\tcmpl %%ecx, (%%rbx)\n"
 		"\tjnz 3b\n"
 
 		/*
 		 * while (size-- > 0)
 		 */
-		"\tadd %4, %%rdi\n"
-		"\tadd %5, %%rsi\n"
-		"\tadd %6, %%rbx\n"
-		"\tdecl %0\n"
+#ifndef _ILP32
+		"\taddq %[dst_step], %%rdi\n"
+		"\taddq %[src_step], %%rsi\n"
+		"\taddq %[sum_step], %%rbx\n"
+#else
+		"\taddl %[dst_step], %%edi\n"
+		"\taddl %[src_step], %%esi\n"
+		"\taddl %[sum_step], %%ebx\n"
+#endif
+		"\tdecl %[size]\n"
 		"\tjnz 1b\n"
-		
-		"6:"
-		"\tmovq %7, %%rbx\n"
 
-		: /* no output regs */
-		: "m" (size), "m" (dst), "m" (src),
-		  "m" (sum), "m" (dst_step), "m" (src_step),
-		  "m" (sum_step), "m" (old_rbx)
-		: "rsi", "rdi", "edx", "ecx", "eax"
+		"6:"
+#ifdef BOUNDED_RBX
+		"\tmovq %[old_rbx], %%rbx\n"
+#endif
+		: [size] "+&rm" (size)
+#ifdef BOUNDED_RBX
+		  , [old_rbx] "=m" (old_rbx)
+#endif
+	        : [dst] "m" (dst), [src] "m" (src), [sum] "m" (sum),
+		  [dst_step] "im" (dst_step),  [src_step] "im" (src_step),
+		  [sum_step] "im" (sum_step)
+		: "rsi", "rdi", "edx", "ecx", "eax", "memory", "cc"
+#ifndef BOUNDED_RBX
+		  , "rbx"
+#endif
 	);
 }
+
+#ifdef BOUNDED_RBX
+#  undef BOUNDED_RBX
+#endif

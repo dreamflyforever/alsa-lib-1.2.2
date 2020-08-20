@@ -43,6 +43,7 @@ static const struct map_elem widget_map[] = {
 	{"effect", SND_SOC_TPLG_DAPM_EFFECT},
 	{"siggen", SND_SOC_TPLG_DAPM_SIGGEN},
 	{"src", SND_SOC_TPLG_DAPM_SRC},
+	{"asrc", SND_SOC_TPLG_DAPM_ASRC},
 	{"encoder", SND_SOC_TPLG_DAPM_ENCODER},
 	{"decoder", SND_SOC_TPLG_DAPM_DECODER},
 };
@@ -594,7 +595,8 @@ int tplg_parse_dapm_widget(snd_tplg_t *tplg,
 		}
 
 		if (strcmp(id, "invert") == 0) {
-			if (tplg_get_integer(n, &ival, 0))
+			ival = snd_config_get_bool(n);
+			if (ival < 0)
 				return -EINVAL;
 
 			widget->invert = ival;

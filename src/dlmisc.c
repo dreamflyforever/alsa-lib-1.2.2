@@ -32,12 +32,75 @@
 #ifdef HAVE_LIBPTHREAD
 #include <pthread.h>
 #endif
+#include <limits.h>
+
+#if defined(HAVE_LIBDL) && defined(__GLIBC__) && !defined(__UCLIBC__)
+#define DL_ORIGIN_AVAILABLE 1
+#endif
 
 #ifndef DOC_HIDDEN
 #ifndef PIC
 struct snd_dlsym_link *snd_dlsym_start = NULL;
 #endif
+#ifdef DL_ORIGIN_AVAILABLE
+static int snd_libdir_plugin_dir_set = 0;
+static char *snd_libdir_origin = NULL;
 #endif
+#endif
+
+#if defined(DL_ORIGIN_AVAILABLE) && defined(HAVE_LIBPTHREAD)
+static pthread_mutex_t snd_dlpath_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static inline void snd_dlpath_lock(void)
+{
+	pthread_mutex_lock(&snd_dlpath_mutex);
+}
+
+static inline void snd_dlpath_unlock(void)
+{
+	pthread_mutex_unlock(&snd_dlpath_mutex);
+}
+#else
+static inline void snd_dlpath_lock(void) {}
+static inline void snd_dlpath_unlock(void) {}
+#endif
+
+/**
+ *
+ * \brief Compose the dynamic path
+ * \param path Returned path (string)
+ * \param path_len Returned path max size (with trailing zero)
+ * \param name Plugin name (relative)
+ * \return Zero on success, otherwise a negative error code
+ */
+int snd_dlpath(char *path, size_t path_len, const char *name)
+{
+#ifdef DL_ORIGIN_AVAILABLE
+	snd_dlpath_lock();
+	if (!snd_libdir_plugin_dir_set) {
+		struct link_map *links;
+		Dl_info info;
+		char origin[PATH_MAX];
+		if (dladdr1(&snd_dlpath, &info, (void**)&links, RTLD_DL_LINKMAP) == 0)
+			links = NULL;
+		if (links != NULL && dlinfo(links, RTLD_DI_ORIGIN, origin) == 0) {
+			snprintf(path, path_len, "%s/alsa-lib", origin);
+			if (access(path, X_OK) == 0)
+				snd_libdir_origin = strdup(origin);
+		}
+		snd_libdir_plugin_dir_set = 1;
+	}
+	if (snd_libdir_origin) {
+		snprintf(path, path_len, "%s/alsa-lib/%s", snd_libdir_origin, name);
+	} else {
+		snprintf(path, path_len, "%s/%s", ALSA_PLUGIN_DIR, name);
+	}
+	snd_dlpath_unlock();
+#else
+	snprintf(path, path_len, "%s/%s", ALSA_PLUGIN_DIR, name);
+#endif
+	return 0;
+}
 
 /**
  * \brief Opens a dynamic library - ALSA wrapper for \c dlopen.
@@ -79,14 +142,12 @@ void *snd_dlopen(const char *name, int mode, char *errbuf, size_t errbuflen)
 	 * via ld.so.conf.
 	 */
 	void *handle = NULL;
-	char *filename = NULL;
+	const char *filename = NULL;
+	char path[PATH_MAX];
 
 	if (name && name[0] != '/') {
-		filename = alloca(sizeof(ALSA_PLUGIN_DIR) + 1 + strlen(name) + 1);
-		if (filename) {
-			strcpy(filename, ALSA_PLUGIN_DIR);
-			strcat(filename, "/");
-			strcat(filename, name);
+		if (snd_dlpath(path, sizeof(path), name) == 0) {
+			filename = path;
 			handle = dlopen(filename, mode);
 			if (!handle) {
 				/* if the filename exists and cannot be opened */
@@ -97,6 +158,7 @@ void *snd_dlopen(const char *name, int mode, char *errbuf, size_t errbuflen)
 		}
 	}
 	if (!handle) {
+		filename = name;
 		handle = dlopen(name, mode);
 		if (!handle)
 			goto errpath;
@@ -385,7 +447,13 @@ void snd_dlobj_cache_cleanup(void)
 		free((void *)c->lib); /* shut up gcc warning */
 		free(c);
 	}
-
 	snd_dlobj_unlock();
+#ifdef DL_ORIGIN_AVAILABLE
+	snd_dlpath_lock();
+	snd_libdir_plugin_dir_set = 0;
+	free(snd_libdir_origin);
+	snd_libdir_origin = NULL;
+	snd_dlpath_unlock();
+#endif
 }
 #endif

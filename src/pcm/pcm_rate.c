@@ -1051,6 +1051,7 @@ static int snd_pcm_rate_drain(snd_pcm_t *pcm)
 		/* commit the remaining fraction (if any) */
 		snd_pcm_uframes_t size, ofs, saved_avail_min;
 		snd_pcm_sw_params_t sw_params;
+		int commit_err = 0;
 
 		__snd_pcm_lock(pcm);
 		/* temporarily set avail_min to one */
@@ -1060,6 +1061,8 @@ static int snd_pcm_rate_drain(snd_pcm_t *pcm)
 		snd_pcm_sw_params(rate->gen.slave, &sw_params);
 
 		size = rate->appl_ptr - rate->last_commit_ptr;
+		if (size > pcm->boundary)
+			size -= pcm->boundary;
 		ofs = rate->last_commit_ptr % pcm->buffer_size;
 		while (size > 0) {
 			snd_pcm_uframes_t psize, spsize;
@@ -1077,14 +1080,29 @@ static int snd_pcm_rate_drain(snd_pcm_t *pcm)
 				if (! spsize)
 					break;
 			}
-			snd_pcm_rate_commit_area(pcm, rate, ofs,
+			commit_err = snd_pcm_rate_commit_area(pcm, rate, ofs,
 						 psize, spsize);
+			if (commit_err == 1) {
+				rate->last_commit_ptr += psize;
+				if (rate->last_commit_ptr >= pcm->boundary)
+					rate->last_commit_ptr = 0;
+			} else if (commit_err == 0) {
+				if (pcm->mode & SND_PCM_NONBLOCK) {
+					commit_err = -EAGAIN;
+					break;
+				}
+				continue;
+			} else
+				break;
+
 			ofs = (ofs + psize) % pcm->buffer_size;
 			size -= psize;
 		}
 		sw_params.avail_min = saved_avail_min;
 		snd_pcm_sw_params(rate->gen.slave, &sw_params);
 		__snd_pcm_unlock(pcm);
+		if (commit_err < 0)
+			return commit_err;
 	}
 	return snd_pcm_drain(rate->gen.slave);
 }
@@ -1263,7 +1281,7 @@ static const char *const default_rate_plugins[] = {
 
 static int rate_open_func(snd_pcm_rate_t *rate, const char *type, const snd_config_t *converter_conf, int verbose)
 {
-	char open_name[64], open_conf_name[64], lib_name[128], *lib = NULL;
+	char open_name[64], open_conf_name[64], lib_name[64], *lib = NULL;
 	snd_pcm_rate_open_func_t open_func;
 	snd_pcm_rate_open_conf_func_t open_conf_func;
 	int err;
@@ -1272,7 +1290,7 @@ static int rate_open_func(snd_pcm_rate_t *rate, const char *type, const snd_conf
 	snprintf(open_conf_name, sizeof(open_conf_name), "_snd_pcm_rate_%s_open_conf", type);
 	if (!is_builtin_plugin(type)) {
 		snprintf(lib_name, sizeof(lib_name),
-				 "%s/libasound_module_rate_%s.so", ALSA_PLUGIN_DIR, type);
+				 "libasound_module_rate_%s.so", type);
 		lib = lib_name;
 	}
 

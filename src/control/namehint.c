@@ -78,6 +78,31 @@ static int hint_list_add(struct hint_list *list,
 	return 0;
 }
 
+/**
+ * Add a namehint from string given in a user configuration file
+ */
+static int hint_list_add_custom(struct hint_list *list,
+				const char *entry)
+{
+	int err;
+	const char *sep;
+	char *name;
+
+	assert(entry);
+
+	sep = strchr(entry, '|');
+	if (sep == NULL)
+		return hint_list_add(list, entry, NULL);
+
+	name = strndup(entry, sep - entry);
+	if (name == NULL)
+		return -ENOMEM;
+
+	err = hint_list_add(list, name, sep + 1);
+	free(name);
+	return err;
+}
+
 static void zero_handler(const char *file ATTRIBUTE_UNUSED,
 			 int line ATTRIBUTE_UNUSED,
 			 const char *function ATTRIBUTE_UNUSED,
@@ -270,8 +295,6 @@ static int try_config(snd_config_t *config,
 	if (snd_config_search(cfg1, "type", &cfg) >= 0 &&
 	    snd_config_get_string(cfg, &str) >= 0 &&
 	    strcmp(str, "hw") == 0) {
-		list->device_input = -1;
-		list->device_output = -1;
 		if (snd_config_search(cfg1, "device", &cfg) >= 0) {
 			if (snd_config_get_integer(cfg, &dev) < 0) {
 				SNDERR("(%s) device must be an integer", buf);
@@ -287,10 +310,14 @@ static int try_config(snd_config_t *config,
 			err = -EINVAL;
 			goto __cleanup;
 		}
+		if (list->card < 0 &&
+		    snd_config_search(cfg, "omit_noargs", &n) >= 0 &&
+		    snd_config_get_bool(n) > 0)
+			goto __skip_add;
 		if (level == 1 &&
 		    snd_config_search(cfg, "show", &n) >= 0 &&
 		    snd_config_get_bool(n) <= 0)
-		    	goto __skip_add;
+			goto __skip_add;
 		if (buf1 == NULL &&
 		    snd_config_search(cfg, "description", &n) >= 0 &&
 		    snd_config_get_string(n, &str) >= 0) {
@@ -541,10 +568,10 @@ static int add_software_devices(snd_config_t *config, snd_config_t *rw_config,
  * User-defined hints are gathered from namehint.IFACE tree like:
  *
  * <code>
- * namehint.pcm {<br>
+ * namehint.pcm [<br>
  *   myfile "file:FILE=/tmp/soundwave.raw|Save sound output to /tmp/soundwave.raw"<br>
- *   myplug "plug:front:Do all conversions for front speakers"<br>
- * }
+ *   myplug "plug:front|Do all conversions for front speakers"<br>
+ * ]
  * </code>
  *
  * Note: The device description is separated with '|' char.
@@ -624,7 +651,7 @@ int snd_device_name_hint(int card, const char *iface, void ***hints)
 			if (snd_config_get_string(snd_config_iterator_entry(i),
 						  &str) < 0)
 				continue;
-			err = hint_list_add(&list, str, NULL);
+			err = hint_list_add_custom(&list, str);
 			if (err < 0)
 				goto __error;
 		}

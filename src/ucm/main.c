@@ -333,6 +333,7 @@ static int execute_sequence(snd_use_case_mgr_t *uc_mgr,
 	struct sequence_element *s;
 	char *cdev = NULL;
 	snd_ctl_t *ctl = NULL;
+	struct ctl_list *ctl_list;
 	int err = 0;
 
 	list_for_each(pos, seq) {
@@ -400,11 +401,12 @@ static int execute_sequence(snd_use_case_mgr_t *uc_mgr,
 				}
 			}
 			if (ctl == NULL) {
-				err = uc_mgr_open_ctl(uc_mgr, &ctl, cdev);
+				err = uc_mgr_open_ctl(uc_mgr, &ctl_list, cdev, 1);
 				if (err < 0) {
 					uc_error("unable to open ctl device '%s'", cdev);
 					goto __fail;
 				}
+				ctl = ctl_list->ctl;
 			}
 			err = execute_cset(ctl, s->data.cset, s->type);
 			if (err < 0) {
@@ -516,7 +518,7 @@ static int add_auto_values(snd_use_case_mgr_t *uc_mgr)
 	char buf[40];
 	int err;
 
-	ctl_list = uc_mgr_get_one_ctl(uc_mgr);
+	ctl_list = uc_mgr_get_master_ctl(uc_mgr);
 	if (ctl_list) {
 		id = snd_ctl_card_info_get_id(ctl_list->ctl_info);
 		snprintf(buf, sizeof(buf), "hw:%s", id);
@@ -527,6 +529,27 @@ static int add_auto_values(snd_use_case_mgr_t *uc_mgr)
 		if (err < 0)
 			return err;
 	}
+	return 0;
+}
+
+/**
+ * \brief execute default commands
+ * \param uc_mgr Use case manager
+ * \return zero on success, otherwise a negative error code
+ */
+static int set_defaults(snd_use_case_mgr_t *uc_mgr)
+{
+	int err;
+
+	if (uc_mgr->default_list_executed)
+		return 0;
+	err = execute_sequence(uc_mgr, &uc_mgr->default_list,
+			       &uc_mgr->value_list, NULL, NULL);
+	if (err < 0) {
+		uc_error("Unable to execute default sequence");
+		return err;
+	}
+	uc_mgr->default_list_executed = 1;
 	return 0;
 }
 
@@ -542,14 +565,7 @@ static int import_master_config(snd_use_case_mgr_t *uc_mgr)
 	err = uc_mgr_import_master_config(uc_mgr);
 	if (err < 0)
 		return err;
-	err = add_auto_values(uc_mgr);
-	if (err < 0)
-		return err;
-	err = execute_sequence(uc_mgr, &uc_mgr->default_list,
-			       &uc_mgr->value_list, NULL, NULL);
-	if (err < 0)
-		uc_error("Unable to execute default sequence");
-	return err;
+	return add_auto_values(uc_mgr);
 }
 
 /**
@@ -845,6 +861,9 @@ static int set_verb(snd_use_case_mgr_t *uc_mgr,
 	int err;
 
 	if (enable) {
+		err = set_defaults(uc_mgr);
+		if (err < 0)
+			return err;
 		seq = &verb->enable_list;
 	} else {
 		seq = &verb->disable_list;
@@ -943,11 +962,13 @@ int snd_use_case_mgr_open(snd_use_case_mgr_t **uc_mgr,
 	if (mgr == NULL)
 		return -ENOMEM;
 	INIT_LIST_HEAD(&mgr->verb_list);
+	INIT_LIST_HEAD(&mgr->once_list);
 	INIT_LIST_HEAD(&mgr->default_list);
 	INIT_LIST_HEAD(&mgr->value_list);
 	INIT_LIST_HEAD(&mgr->active_modifiers);
 	INIT_LIST_HEAD(&mgr->active_devices);
 	INIT_LIST_HEAD(&mgr->ctl_list);
+	INIT_LIST_HEAD(&mgr->variable_list);
 	pthread_mutex_init(&mgr->mutex, NULL);
 
 	mgr->card_name = strdup(card_name);
@@ -984,6 +1005,8 @@ int snd_use_case_mgr_reload(snd_use_case_mgr_t *uc_mgr)
 	pthread_mutex_lock(&uc_mgr->mutex);
 
 	uc_mgr_free_verb(uc_mgr);
+
+	uc_mgr->default_list_executed = 0;
 
 	/* reload all use cases */
 	err = import_master_config(uc_mgr);
@@ -1826,6 +1849,34 @@ int snd_use_case_geti(snd_use_case_mgr_t *uc_mgr,
         return err;
 }
 
+static int set_boot_user(snd_use_case_mgr_t *uc_mgr,
+			 const char *value)
+{
+	int err;
+
+	if (value != NULL && *value) {
+		uc_error("error: wrong value for _boot (%s)", value);
+		return -EINVAL;
+	}
+	err = execute_sequence(uc_mgr, &uc_mgr->once_list,
+			       &uc_mgr->value_list, NULL, NULL);
+	if (err < 0) {
+		uc_error("Unable to execute once sequence");
+		return err;
+	}
+	return err;
+}
+
+static int set_defaults_user(snd_use_case_mgr_t *uc_mgr,
+			     const char *value)
+{
+	if (value != NULL && *value) {
+		uc_error("error: wrong value for _defaults (%s)", value);
+		return -EINVAL;
+	}
+	return set_defaults(uc_mgr);
+}
+
 static int handle_transition_verb(snd_use_case_mgr_t *uc_mgr,
                                   struct use_case_verb *new_verb)
 {
@@ -2037,7 +2088,11 @@ int snd_use_case_set(snd_use_case_mgr_t *uc_mgr,
 	int err = 0;
 
 	pthread_mutex_lock(&uc_mgr->mutex);
-	if (strcmp(identifier, "_verb") == 0)
+	if (strcmp(identifier, "_boot") == 0)
+		err = set_boot_user(uc_mgr, value);
+	else if (strcmp(identifier, "_defaults") == 0)
+		err = set_defaults_user(uc_mgr, value);
+	else if (strcmp(identifier, "_verb") == 0)
 	        err = set_verb_user(uc_mgr, value);
         else if (strcmp(identifier, "_enadev") == 0)
                 err = set_device_user(uc_mgr, value, 1);
