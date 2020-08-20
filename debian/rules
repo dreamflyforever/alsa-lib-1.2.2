@@ -38,3 +38,17 @@ override_dh_installchangelogs:
 
 override_dh_makeshlibs:
 	dh_makeshlibs -- -c4
+
+override_dh_auto_clean:
+	rm -rf doc/doxygen
+	rm -f src/control/ctl_symbols_list.c \
+              src/control/libcontrol.la \
+              src/hwdep/libhwdep.la \
+              src/mixer/libmixer.la \
+              src/pcm/libpcm.la \
+              src/pcm/pcm_symbols_list.c \
+              src/rawmidi/librawmidi.la \
+              src/seq/libseq.la \
+              src/timer/libtimer.la \
+              src/ucm/libucm.la
+	dh_auto_clean

@@ -1,3 +1,12 @@
+alsa-lib (1.2.2-2.3) unstable; urgency=medium
+
+  * Non-maintainer upload.
+  * debian/rules:
+      - Added override_dh_auto_clean to allow the package build twice.
+        (Closes: #962849)
+
+ -- Francisco Vilmar Cardoso Ruviaro <francisco.ruviaro@riseup.net>  Mon, 15 Jun 2020 04:16:18 +0000
+
 alsa-lib (1.2.2-2.2) unstable; urgency=medium
 
   * Non-maintainer upload.
