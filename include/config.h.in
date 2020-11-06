@@ -132,6 +132,9 @@
 /* Define to 1 if compiler supports __thread */
 #undef HAVE___THREAD
 
+/* Lockless dmix as default */
+#undef LOCKLESS_DMIX_DEFAULT
+
 /* Define to the sub-directory where libtool stores uninstalled libraries. */
 #undef LT_OBJDIR
 
