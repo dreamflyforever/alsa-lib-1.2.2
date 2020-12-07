@@ -1,6 +1,7 @@
 alsa-lib (1.2.4-1) UNRELEASED; urgency=medium
 
   * New upstream release.
+  * Update Standards-Version to 4.5.1, with no changes needed.
 
  -- Jordi Mallach <jordi@debian.org>  Fri, 06 Nov 2020 16:08:19 +0100
 
