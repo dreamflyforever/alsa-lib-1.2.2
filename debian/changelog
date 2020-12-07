@@ -1,9 +1,9 @@
-alsa-lib (1.2.4-1) UNRELEASED; urgency=medium
+alsa-lib (1.2.4-1) unstable; urgency=medium
 
   * New upstream release.
   * Update Standards-Version to 4.5.1, with no changes needed.
 
- -- Jordi Mallach <jordi@debian.org>  Fri, 06 Nov 2020 16:08:19 +0100
+ -- Jordi Mallach <jordi@debian.org>  Mon, 07 Dec 2020 22:02:09 +0100
 
 alsa-lib (1.2.3.2-1) unstable; urgency=medium
 
