@@ -3,6 +3,7 @@ alsa-lib (1.2.5.1-1) UNRELEASED; urgency=medium
   [ Jordi Mallach ]
   * New upstream release.
   * Acknowledge 1.2.4-1.1 NMU by Thorsten Glaser.
+  * Drop 976895.diff, cherry-picked from current version.
 
   [ Debian Janitor ]
   * Set upstream metadata fields: Repository.
