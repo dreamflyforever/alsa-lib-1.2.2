@@ -8,7 +8,9 @@ libasound.so.2 libasound2 #MINVER#
  ALSA_0.9.7@ALSA_0.9.7 1.0.16
  ALSA_0.9@ALSA_0.9 1.0.16
  ALSA_1.1.6@ALSA_1.1.6 1.1.6
+ __snd_ctl_empty_open_dlsym_control_001@ALSA_0.9 1.2.5
  __snd_ctl_hw_open_dlsym_control_001@ALSA_0.9 1.0.16
+ __snd_ctl_remap_open_dlsym_control_001@ALSA_0.9 1.2.5
  __snd_ctl_shm_open_dlsym_control_001@ALSA_0.9 1.0.16
  __snd_hwdep_hw_open_dlsym_hwdep_001@ALSA_0.9 1.0.16
  __snd_pcm_adpcm_open_dlsym_pcm_001@ALSA_0.9 1.0.16
@@ -110,8 +112,10 @@ libasound.so.2 libasound2 #MINVER#
  __snd_timer_query_hw_open_dlsym_timer_query_001@ALSA_0.9 1.0.16
  _snd_config_hook_load_dlsym_config_hook_001@ALSA_0.9 1.0.16
  _snd_config_hook_load_for_all_cards_dlsym_config_hook_001@ALSA_0.9 1.0.16
+ _snd_ctl_empty_open@ALSA_0.9 1.2.5
  _snd_ctl_hw_open@ALSA_0.9 1.0.16
  _snd_ctl_poll_descriptor@ALSA_0.9 1.0.16
+ _snd_ctl_remap_open@ALSA_0.9 1.2.5
  _snd_ctl_shm_open@ALSA_0.9 1.0.16
  _snd_func_card_driver_dlsym_config_evaluate_001@ALSA_0.9 1.0.16
  _snd_func_card_id_dlsym_config_evaluate_001@ALSA_0.9 1.0.16
@@ -126,6 +130,7 @@ libasound.so.2 libasound2 #MINVER#
  _snd_func_pcm_args_by_class_dlsym_config_evaluate_001@ALSA_0.9 1.0.16
  _snd_func_pcm_id_dlsym_config_evaluate_001@ALSA_0.9 1.0.16
  _snd_func_private_card_driver_dlsym_config_evaluate_001@ALSA_0.9 1.0.16
+ _snd_func_private_integer_dlsym_config_evaluate_001@ALSA_0.9 1.2.5
  _snd_func_private_pcm_subdevice_dlsym_config_evaluate_001@ALSA_0.9 1.0.16
  _snd_func_private_string_dlsym_config_evaluate_001@ALSA_0.9 1.0.16
  _snd_func_refer_dlsym_config_evaluate_001@ALSA_0.9 1.0.16
@@ -193,6 +198,7 @@ libasound.so.2 libasound2 #MINVER#
  snd_config_get_ascii@ALSA_0.9 1.0.16
  snd_config_get_bool@ALSA_0.9 1.0.16
  snd_config_get_bool_ascii@ALSA_0.9 1.0.16
+ snd_config_get_card@ALSA_0.9 1.2.5
  snd_config_get_ctl_iface@ALSA_0.9 1.0.16
  snd_config_get_ctl_iface_ascii@ALSA_0.9 1.0.16
  snd_config_get_id@ALSA_0.9 1.0.16
@@ -213,6 +219,7 @@ libasound.so.2 libasound2 #MINVER#
  snd_config_imake_safe_string@ALSA_0.9 1.1.0
  snd_config_imake_string@ALSA_0.9 1.0.16
  snd_config_is_array@ALSA_0.9 1.2.3
+ snd_config_is_empty@ALSA_0.9 1.2.5
  snd_config_iterator_end@ALSA_0.9 1.0.16
  snd_config_iterator_entry@ALSA_0.9 1.0.16
  snd_config_iterator_first@ALSA_0.9 1.0.16
@@ -223,9 +230,11 @@ libasound.so.2 libasound2 #MINVER#
  snd_config_make_compound@ALSA_0.9 1.0.16
  snd_config_make_integer64@ALSA_0.9 1.0.16
  snd_config_make_integer@ALSA_0.9 1.0.16
+ snd_config_make_path@ALSA_0.9 1.2.5
  snd_config_make_pointer@ALSA_0.9 1.0.16
  snd_config_make_real@ALSA_0.9 1.0.16
  snd_config_make_string@ALSA_0.9 1.0.16
+ snd_config_merge@ALSA_0.9 1.2.5
  snd_config_ref@ALSA_0.9 1.1.2
  snd_config_remove@ALSA_0.9 1.0.16
  snd_config_save@ALSA_0.9 1.0.16
@@ -286,6 +295,8 @@ libasound.so.2 libasound2 #MINVER#
  snd_ctl_elem_add_integer64@ALSA_0.9 1.0.16
  snd_ctl_elem_add_integer@ALSA_0.9 1.0.16
  snd_ctl_elem_id_clear@ALSA_0.9 1.0.16
+ snd_ctl_elem_id_compare_numid@ALSA_0.9 1.2.5
+ snd_ctl_elem_id_compare_set@ALSA_0.9 1.2.5
  snd_ctl_elem_id_copy@ALSA_0.9 1.0.16
  snd_ctl_elem_id_free@ALSA_0.9 1.0.16
  snd_ctl_elem_id_get_device@ALSA_0.9 1.0.16
@@ -342,12 +353,15 @@ libasound.so.2 libasound2 #MINVER#
  snd_ctl_elem_info_set_device@ALSA_0.9 1.0.16
  snd_ctl_elem_info_set_dimension@ALSA_0.9 1.1.2
  snd_ctl_elem_info_set_id@ALSA_0.9 1.0.16
+ snd_ctl_elem_info_set_inactive@ALSA_0.9 1.2.5
  snd_ctl_elem_info_set_index@ALSA_0.9 1.0.16
  snd_ctl_elem_info_set_interface@ALSA_0.9 1.0.16
  snd_ctl_elem_info_set_item@ALSA_0.9 1.0.16
  snd_ctl_elem_info_set_name@ALSA_0.9 1.0.16
  snd_ctl_elem_info_set_numid@ALSA_0.9 1.0.16
+ snd_ctl_elem_info_set_read_write@ALSA_0.9 1.2.5
  snd_ctl_elem_info_set_subdevice@ALSA_0.9 1.0.16
+ snd_ctl_elem_info_set_tlv_read_write@ALSA_0.9 1.2.5
  snd_ctl_elem_info_sizeof@ALSA_0.9 1.0.16
  snd_ctl_elem_list@ALSA_0.9 1.0.16
  snd_ctl_elem_list_alloc_space@ALSA_0.9 1.0.16
@@ -447,6 +461,7 @@ libasound.so.2 libasound2 #MINVER#
  snd_ctl_rawmidi_next_device@ALSA_0.9 1.0.16
  snd_ctl_rawmidi_prefer_subdevice@ALSA_0.9 1.0.16
  snd_ctl_read@ALSA_0.9 1.0.16
+ snd_ctl_remap_open@ALSA_0.9 1.2.5
  snd_ctl_set_power_state@ALSA_0.9 1.0.16
  snd_ctl_shm_open@ALSA_0.9 1.0.16
  snd_ctl_subscribe_events@ALSA_0.9 1.0.16
@@ -475,6 +490,7 @@ libasound.so.2 libasound2 #MINVER#
  snd_func_pcm_args_by_class@ALSA_0.9 1.0.16
  snd_func_pcm_id@ALSA_0.9 1.0.16
  snd_func_private_card_driver@ALSA_0.9 1.0.16
+ snd_func_private_integer@ALSA_0.9 1.2.5
  snd_func_private_pcm_subdevice@ALSA_0.9 1.0.16
  snd_func_private_string@ALSA_0.9 1.0.16
  snd_func_refer@ALSA_0.9 1.0.16
@@ -751,6 +767,7 @@ libasound.so.2 libasound2 #MINVER#
  snd_names_list@ALSA_0.9 1.0.16
  snd_names_list_free@ALSA_0.9 1.0.16
  snd_output_buffer_open@ALSA_0.9 1.0.16
+ snd_output_buffer_steal@ALSA_0.9 1.2.5
  snd_output_buffer_string@ALSA_0.9 1.0.16
  snd_output_close@ALSA_0.9 1.0.16
  snd_output_flush@ALSA_0.9 1.0.16
@@ -1127,7 +1144,6 @@ libasound.so.2 libasound2 #MINVER#
  snd_pcm_open@ALSA_0.9 1.0.16
  snd_pcm_open_fallback@ALSA_0.9 1.0.25
  snd_pcm_open_lconf@ALSA_0.9 1.0.16
- snd_pcm_parse_control_id@ALSA_0.9 1.0.16
  snd_pcm_pause@ALSA_0.9 1.0.16
  snd_pcm_plug_open@ALSA_0.9 1.0.16
  snd_pcm_poll_descriptors@ALSA_0.9 1.0.16
