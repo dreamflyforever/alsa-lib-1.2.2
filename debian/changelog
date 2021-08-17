@@ -5,6 +5,7 @@ alsa-lib (1.2.5.1-1) UNRELEASED; urgency=medium
   * Acknowledge 1.2.4-1.1 NMU by Thorsten Glaser.
   * Drop 976895.diff, cherry-picked from current version.
   * Update symbols file with newly added symbols.
+  * Add several entries to upstream metadata.
 
   [ Debian Janitor ]
   * Set upstream metadata fields: Repository.
