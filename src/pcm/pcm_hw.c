@@ -600,9 +600,10 @@ static int snd_pcm_hw_status(snd_pcm_t *pcm, snd_pcm_status_t * status)
 static snd_pcm_state_t snd_pcm_hw_state(snd_pcm_t *pcm)
 {
 	snd_pcm_hw_t *hw = pcm->private_data;
-	int err = query_status_data(hw);
-	if (err < 0)
-		return err;
+	/* the -ENODEV may come from the snd_disconnect_ioctl() or
+	   snd_power_wait() in kernel */
+	if (query_status_data(hw) == -ENODEV)
+		return SND_PCM_STATE_DISCONNECTED;
 	return (snd_pcm_state_t) hw->mmap_status->state;
 }
 
@@ -1816,21 +1817,10 @@ int _snd_pcm_hw_open(snd_pcm_t **pcmp, const char *name,
 		if (snd_pcm_conf_generic_id(id))
 			continue;
 		if (strcmp(id, "card") == 0) {
-			err = snd_config_get_integer(n, &card);
-			if (err < 0) {
-				err = snd_config_get_string(n, &str);
-				if (err < 0) {
-					SNDERR("Invalid type for %s", id);
-					err = -EINVAL;
-					goto fail;
-				}
-				card = snd_card_get_index(str);
-				if (card < 0) {
-					SNDERR("Invalid value for %s", id);
-					err = card;
-					goto fail;
-				}
-			}
+			err = snd_config_get_card(n);
+			if (err < 0)
+				goto fail;
+			card = err;
 			continue;
 		}
 		if (strcmp(id, "device") == 0) {

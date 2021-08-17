@@ -77,12 +77,12 @@ Each element has the following identifying properties:
   - Its name
   - Its index
 
-An element can be identified either by its numid or by the tuple
-(interface type, device, subdevice, name, index). This tuple is always
-the same (driver updates can change it, but in practice this is
-rare). The numid can change on each boot. In case of an USB sound
-card, the numid can also change when it is reconnected.
-
+An element can be identified either by its short numid or by the full
+set of fields (interface type, device, subdevice, name, index).
+This set of fields is always the same (driver updates can change it,
+but in practice this is rare). The numid can change on each boot.
+In case of an USB sound card, the numid can also change when it
+is reconnected. The short numid is used to reduce the lookup time.
 
 \section element_lists Element Lists
 
@@ -153,6 +153,7 @@ against the original design.
 #include <signal.h>
 #include <poll.h>
 #include <stdbool.h>
+#include <limits.h>
 #include "control_local.h"
 
 /**
@@ -409,10 +410,55 @@ static bool validate_element_member_dimension(snd_ctl_elem_info_t *info)
 #define validate_element_member_dimension(info)		true
 #endif /* deprecated */
 
+#define USER_ACCESS_DEFAULT (\
+	SNDRV_CTL_ELEM_ACCESS_READWRITE |\
+	SNDRV_CTL_ELEM_ACCESS_TLV_READWRITE |\
+	SNDRV_CTL_ELEM_ACCESS_USER)
+
+#define USER_ACCESS_SETTABLE (\
+	SNDRV_CTL_ELEM_ACCESS_READWRITE |\
+	SNDRV_CTL_ELEM_ACCESS_VOLATILE |\
+	SNDRV_CTL_ELEM_ACCESS_TLV_READWRITE |\
+	SNDRV_CTL_ELEM_ACCESS_INACTIVE |\
+	SNDRV_CTL_ELEM_ACCESS_USER)
+
+static inline int set_user_access(snd_ctl_elem_info_t *info)
+{
+	if (info->access == 0) {
+		info->access = USER_ACCESS_DEFAULT;
+	} else {
+		if ((info->access & SNDRV_CTL_ELEM_ACCESS_READWRITE) == 0)
+			return -1;
+		if (info->access & ~USER_ACCESS_SETTABLE)
+			return -1;
+		info->access |= SNDRV_CTL_ELEM_ACCESS_USER;
+	}
+	return 0;
+}
+
+int __snd_ctl_add_elem_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
+			   unsigned int element_count,
+			   unsigned int member_count)
+{
+	if (ctl == NULL || info->id.name[0] == '\0')
+		return -EINVAL;
+
+	if (set_user_access(info))
+		return -EINVAL;
+
+	info->owner = element_count;
+	info->count = member_count;
+
+	if (!validate_element_member_dimension(info))
+		return -EINVAL;
+
+	return ctl->ops->element_add(ctl, info);
+}
+
 /**
  * \brief Create and add some user-defined control elements of integer type.
  * \param ctl A handle of backend module for control interface.
- * \param info Common iformation for a new element set, with ID of the first new
+ * \param info Common information for a new element set, with ID of the first new
  *	       element.
  * \param element_count The number of elements added by this operation.
  * \param member_count The number of members which a element has to
@@ -462,23 +508,15 @@ int snd_ctl_add_integer_elem_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
 	unsigned int numid;
 	int err;
 
-	if (ctl == NULL || info == NULL || info->id.name[0] == '\0')
+	if (info == NULL)
 		return -EINVAL;
 
 	info->type = SND_CTL_ELEM_TYPE_INTEGER;
-	info->access = SNDRV_CTL_ELEM_ACCESS_READWRITE |
-		       SNDRV_CTL_ELEM_ACCESS_TLV_READWRITE |
-		       SNDRV_CTL_ELEM_ACCESS_USER;
-	info->owner = element_count;
-	info->count = member_count;
 	info->value.integer.min = min;
 	info->value.integer.max = max;
 	info->value.integer.step = step;
 
-	if (!validate_element_member_dimension(info))
-		return -EINVAL;
-
-	err = ctl->ops->element_add(ctl, info);
+	err = __snd_ctl_add_elem_set(ctl, info, element_count, member_count);
 	if (err < 0)
 		return err;
 	numid = snd_ctl_elem_id_get_numid(&info->id);
@@ -502,7 +540,7 @@ int snd_ctl_add_integer_elem_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
 /**
  * \brief Create and add some user-defined control elements of integer64 type.
  * \param ctl A handle of backend module for control interface.
- * \param info Common iformation for a new element set, with ID of the first new
+ * \param info Common information for a new element set, with ID of the first new
  *	       element.
  * \param element_count The number of elements added by this operation.
  * \param member_count The number of members which a element has to
@@ -552,23 +590,15 @@ int snd_ctl_add_integer64_elem_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
 	unsigned int numid;
 	int err;
 
-	if (ctl == NULL || info == NULL || info->id.name[0] == '\0')
+	if (info == NULL)
 		return -EINVAL;
 
 	info->type = SND_CTL_ELEM_TYPE_INTEGER64;
-	info->access = SNDRV_CTL_ELEM_ACCESS_READWRITE |
-		       SNDRV_CTL_ELEM_ACCESS_TLV_READWRITE |
-		       SNDRV_CTL_ELEM_ACCESS_USER;
-	info->owner = element_count;
-	info->count = member_count;
 	info->value.integer64.min = min;
 	info->value.integer64.max = max;
 	info->value.integer64.step = step;
 
-	if (!validate_element_member_dimension(info))
-		return -EINVAL;
-
-	err = ctl->ops->element_add(ctl, info);
+	err = __snd_ctl_add_elem_set(ctl, info, element_count, member_count);
 	if (err < 0)
 		return err;
 	numid = snd_ctl_elem_id_get_numid(&info->id);
@@ -592,7 +622,7 @@ int snd_ctl_add_integer64_elem_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
 /**
  * \brief Create and add some user-defined control elements of boolean type.
  * \param ctl A handle of backend module for control interface.
- * \param info Common iformation for a new element set, with ID of the first new
+ * \param info Common information for a new element set, with ID of the first new
  *	       element.
  * \param element_count The number of elements added by this operation.
  * \param member_count The number of members which a element has to
@@ -631,28 +661,20 @@ int snd_ctl_add_boolean_elem_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
 				 unsigned int element_count,
 				 unsigned int member_count)
 {
-	if (ctl == NULL || info == NULL || info->id.name[0] == '\0')
+	if (info == NULL)
 		return -EINVAL;
 
 	info->type = SND_CTL_ELEM_TYPE_BOOLEAN;
-	info->access = SNDRV_CTL_ELEM_ACCESS_READWRITE |
-		       SNDRV_CTL_ELEM_ACCESS_TLV_READWRITE |
-		       SNDRV_CTL_ELEM_ACCESS_USER;
-	info->owner = element_count;
-	info->count = member_count;
 	info->value.integer.min = 0;
 	info->value.integer.max = 1;
 
-	if (!validate_element_member_dimension(info))
-		return -EINVAL;
-
-	return ctl->ops->element_add(ctl, info);
+	return __snd_ctl_add_elem_set(ctl, info, element_count, member_count);
 }
 
 /**
  * \brief Create and add some user-defined control elements of enumerated type.
  * \param ctl A handle of backend module for control interface.
- * \param info Common iformation for a new element set, with ID of the first new
+ * \param info Common information for a new element set, with ID of the first new
  *	       element.
  * \param element_count The number of elements added by this operation.
  * \param member_count The number of members which a element has to
@@ -702,14 +724,10 @@ int snd_ctl_add_enumerated_elem_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
 	char *buf, *p;
 	int err;
 
-	if (ctl == NULL || info == NULL || info->id.name[0] == '\0' ||
-	    labels == NULL)
+	if (info == NULL || labels == NULL)
 		return -EINVAL;
 
 	info->type = SND_CTL_ELEM_TYPE_ENUMERATED;
-	info->access = SNDRV_CTL_ELEM_ACCESS_READWRITE |
-		       SNDRV_CTL_ELEM_ACCESS_TLV_READWRITE |
-		       SNDRV_CTL_ELEM_ACCESS_USER;
 	info->owner = element_count;
 	info->count = member_count;
 	info->value.enumerated.items = items;
@@ -730,10 +748,7 @@ int snd_ctl_add_enumerated_elem_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
 		p += strlen(labels[i]) + 1;
 	}
 
-	if (!validate_element_member_dimension(info))
-		return -EINVAL;
-
-	err = ctl->ops->element_add(ctl, info);
+	err = __snd_ctl_add_elem_set(ctl, info, element_count, member_count);
 
 	free(buf);
 
@@ -743,7 +758,7 @@ int snd_ctl_add_enumerated_elem_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
 /**
  * \brief Create and add some user-defined control elements of bytes type.
  * \param ctl A handle of backend module for control interface.
- * \param info Common iformation for a new element set, with ID of the first new
+ * \param info Common information for a new element set, with ID of the first new
  *	       element.
  * \param element_count The number of elements added by this operation.
  * \param member_count The number of members which a element has to
@@ -783,20 +798,12 @@ int snd_ctl_add_bytes_elem_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
 			       unsigned int element_count,
 			       unsigned int member_count)
 {
-	if (ctl == NULL || info == NULL || info->id.name[0] == '\0')
+	if (info == NULL)
 		return -EINVAL;
 
 	info->type = SND_CTL_ELEM_TYPE_BYTES;
-	info->access = SNDRV_CTL_ELEM_ACCESS_READWRITE |
-		       SNDRV_CTL_ELEM_ACCESS_TLV_READWRITE |
-		       SNDRV_CTL_ELEM_ACCESS_USER;
-	info->owner = element_count;
-	info->count = member_count;
 
-	if (!validate_element_member_dimension(info))
-		return -EINVAL;
-
-	return ctl->ops->element_add(ctl, info);
+	return __snd_ctl_add_elem_set(ctl, info, element_count, member_count);
 }
 
 /**
@@ -1338,7 +1345,7 @@ snd_ctl_t *snd_async_handler_get_ctl(snd_async_handler_t *handler)
 }
 
 static const char *const build_in_ctls[] = {
-	"hw", "shm", NULL
+	"hw", "empty", "remap", "shm", NULL
 };
 
 static int snd_ctl_open_conf(snd_ctl_t **ctlp, const char *name,
@@ -1462,19 +1469,43 @@ static int snd_ctl_open_conf(snd_ctl_t **ctlp, const char *name,
 	return err;
 }
 
-static int snd_ctl_open_noupdate(snd_ctl_t **ctlp, snd_config_t *root, const char *name, int mode)
+static int snd_ctl_open_noupdate(snd_ctl_t **ctlp, snd_config_t *root,
+				 const char *name, int mode, int hop)
 {
 	int err;
 	snd_config_t *ctl_conf;
+	const char *str;
+
 	err = snd_config_search_definition(root, "ctl", name, &ctl_conf);
 	if (err < 0) {
 		SNDERR("Invalid CTL %s", name);
 		return err;
 	}
-	err = snd_ctl_open_conf(ctlp, name, root, ctl_conf, mode);
+	if (snd_config_get_string(ctl_conf, &str) >= 0)
+		err = snd_ctl_open_noupdate(ctlp, root, str, mode, hop + 1);
+	else {
+		snd_config_set_hop(ctl_conf, hop);
+		err = snd_ctl_open_conf(ctlp, name, root, ctl_conf, mode);
+	}
 	snd_config_delete(ctl_conf);
 	return err;
 }
+
+#ifndef DOC_HIDDEN
+int _snd_ctl_open_named_child(snd_ctl_t **pctl, const char *name,
+			      snd_config_t *root, snd_config_t *conf,
+			      int mode, snd_config_t *parent_conf)
+{
+	const char *str;
+	int hop;
+
+	if ((hop = snd_config_check_hop(parent_conf)) < 0)
+		return hop;
+	if (snd_config_get_string(conf, &str) >= 0)
+		return snd_ctl_open_noupdate(pctl, root, str, mode, hop + 1);
+	return snd_ctl_open_conf(pctl, name, root, conf, mode);
+}
+#endif
 
 /**
  * \brief Opens a CTL
@@ -1489,10 +1520,16 @@ int snd_ctl_open(snd_ctl_t **ctlp, const char *name, int mode)
 	int err;
 
 	assert(ctlp && name);
-	err = snd_config_update_ref(&top);
-	if (err < 0)
-		return err;
-	err = snd_ctl_open_noupdate(ctlp, top, name, mode);
+	if (_snd_is_ucm_device(name)) {
+		name = uc_mgr_alibcfg_by_device(&top, name);
+		if (name == NULL)
+			return -ENODEV;
+	} else {
+		err = snd_config_update_ref(&top);
+		if (err < 0)
+			return err;
+	}
+	err = snd_ctl_open_noupdate(ctlp, top, name, mode, 0);
 	snd_config_unref(top);
 	return err;
 }
@@ -1509,7 +1546,7 @@ int snd_ctl_open_lconf(snd_ctl_t **ctlp, const char *name,
 		       int mode, snd_config_t *lconf)
 {
 	assert(ctlp && name && lconf);
-	return snd_ctl_open_noupdate(ctlp, lconf, name, mode);
+	return snd_ctl_open_noupdate(ctlp, lconf, name, mode, 0);
 }
 
 /**
@@ -1526,7 +1563,7 @@ int snd_ctl_open_fallback(snd_ctl_t **ctlp, snd_config_t *root,
 {
 	int err;
 	assert(ctlp && name && root);
-	err = snd_ctl_open_noupdate(ctlp, root, name, mode);
+	err = snd_ctl_open_noupdate(ctlp, root, name, mode, 0);
 	if (err >= 0) {
 		free((*ctlp)->name);
 		(*ctlp)->name = orig_name ? strdup(orig_name) : NULL;
@@ -1790,6 +1827,71 @@ void snd_ctl_elem_id_copy(snd_ctl_elem_id_t *dst, const snd_ctl_elem_id_t *src)
 {
 	assert(dst && src);
 	*dst = *src;
+}
+
+/**
+ * \brief compare one #snd_ctl_elem_id_t to another using numid
+ * \param id1 pointer to first id
+ * \param id2 pointer to second id
+ * \retval zero when values are identical, other value on a difference (like strcmp)
+ *
+ * This comparison ignores the set of fields part.
+ *
+ * The return value can be used for sorting like qsort(). It gives persistent
+ * results.
+ */
+int snd_ctl_elem_id_compare_numid(const snd_ctl_elem_id_t *id1, const snd_ctl_elem_id_t *id2)
+{
+	int64_t d;
+
+	assert(id1 && id2);
+	d = (int64_t)id1->numid - (int64_t)id2->numid;
+	if (d & ((int64_t)INT_MAX + 1)) {	/* fast path */
+		if (d > INT_MAX)
+			d = INT_MAX;
+		else if (d < INT_MIN)
+			d = INT_MIN;
+	}
+	return d;
+}
+
+/**
+ * \brief compare one #snd_ctl_elem_id_t to another
+ * \param id1 pointer to first id
+ * \param id2 pointer to second id
+ * \retval zero when values are identical, other value on a difference (like strcmp)
+ *
+ * This comparison ignores the numid part. The numid comparison can be easily
+ * implemented using snd_ctl_elem_id_get_numid() calls.
+ *
+ * The identifier set fields are compared in this order: interface, device,
+ * subdevice, name, index.
+ *
+ * The return value can be used for sorting like qsort(). It gives persistent
+ * results.
+ */
+int snd_ctl_elem_id_compare_set(const snd_ctl_elem_id_t *id1, const snd_ctl_elem_id_t *id2)
+{
+	int d;
+
+	assert(id1 && id2);
+	/* although those values are unsigned integer, practically, */
+	/* the useable limit is really much lower */
+	assert((id1->iface | id1->device | id1->subdevice | id1->index) <= INT_MAX);
+	assert((id2->iface | id2->device | id2->subdevice | id1->index) <= INT_MAX);
+	d = id1->iface - id2->iface;
+	if (d != 0)
+		return d;
+	d = id1->device - id2->device;
+	if (d != 0)
+		return d;
+	d = id1->subdevice - id2->subdevice;
+	if (d != 0)
+		return d;
+	d = strcmp((const char *)id1->name, (const char *)id2->name);
+	if (d != 0)
+		return d;
+	return id1->index - id2->index;
 }
 
 /**
@@ -2891,6 +2993,46 @@ void snd_ctl_elem_info_set_index(snd_ctl_elem_info_t *obj, unsigned int val)
 }
 
 /**
+ * \brief Set readability/writeability parameter of a CTL element id/info
+ * \param obj CTL element id/info
+ * \param rval readability part of element identifier
+ * \param wval writeability part of element identifier
+ */
+void snd_ctl_elem_info_set_read_write(snd_ctl_elem_info_t *obj, int rval, int wval)
+{
+	assert(obj);
+	obj->access = (obj->access & ~SNDRV_CTL_ELEM_ACCESS_READWRITE) |
+				(rval ? SNDRV_CTL_ELEM_ACCESS_READ : 0) |
+				(wval ? SNDRV_CTL_ELEM_ACCESS_WRITE : 0);
+}
+
+/**
+ * \brief Set TLV readability/writeability parameter of a CTL element id/info
+ * \param obj CTL element id/info
+ * \param rval TLV readability part of element identifier
+ * \param wval TLV writeability part of element identifier
+ */
+void snd_ctl_elem_info_set_tlv_read_write(snd_ctl_elem_info_t *obj, int rval, int wval)
+{
+	assert(obj);
+	obj->access = (obj->access & ~SNDRV_CTL_ELEM_ACCESS_TLV_READWRITE) |
+				(rval ? SNDRV_CTL_ELEM_ACCESS_TLV_READ : 0) |
+				(wval ? SNDRV_CTL_ELEM_ACCESS_TLV_WRITE : 0);
+}
+
+/**
+ * \brief Set inactive parameter of a CTL element id/info
+ * \param obj CTL element id/info
+ * \param val inactive part of element identifier
+ */
+void snd_ctl_elem_info_set_inactive(snd_ctl_elem_info_t *obj, int val)
+{
+	assert(obj);
+	obj->access = (obj->access & ~SNDRV_CTL_ELEM_ACCESS_INACTIVE) |
+				(val ? SNDRV_CTL_ELEM_ACCESS_INACTIVE : 0);
+}
+
+/**
  * \brief Get size of data structure for an element.
  * \return Size in bytes.
  */
@@ -3420,4 +3562,3 @@ void snd_ctl_elem_value_set_iec958(snd_ctl_elem_value_t *obj, const snd_aes_iec9
 	assert(obj && ptr);
 	memcpy(&obj->value.iec958, ptr, sizeof(obj->value.iec958));
 }
-

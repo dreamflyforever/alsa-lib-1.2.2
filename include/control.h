@@ -312,7 +312,9 @@ typedef enum _snd_ctl_type {
 	/** INET client CTL (not yet implemented) */
 	SND_CTL_TYPE_INET,
 	/** External control plugin */
-	SND_CTL_TYPE_EXT
+	SND_CTL_TYPE_EXT,
+	/** Control functionality remapping */
+	SND_CTL_TYPE_REMAP,
 } snd_ctl_type_t;
 
 /** Non blocking mode (flag for open mode) \hideinitializer */
@@ -424,6 +426,8 @@ int snd_ctl_elem_id_malloc(snd_ctl_elem_id_t **ptr);
 void snd_ctl_elem_id_free(snd_ctl_elem_id_t *obj);
 void snd_ctl_elem_id_clear(snd_ctl_elem_id_t *obj);
 void snd_ctl_elem_id_copy(snd_ctl_elem_id_t *dst, const snd_ctl_elem_id_t *src);
+int snd_ctl_elem_id_compare_numid(const snd_ctl_elem_id_t *id1, const snd_ctl_elem_id_t *id2);
+int snd_ctl_elem_id_compare_set(const snd_ctl_elem_id_t *id1, const snd_ctl_elem_id_t *id2);
 unsigned int snd_ctl_elem_id_get_numid(const snd_ctl_elem_id_t *obj);
 snd_ctl_elem_iface_t snd_ctl_elem_id_get_interface(const snd_ctl_elem_id_t *obj);
 unsigned int snd_ctl_elem_id_get_device(const snd_ctl_elem_id_t *obj);
@@ -545,6 +549,9 @@ void snd_ctl_elem_info_set_device(snd_ctl_elem_info_t *obj, unsigned int val);
 void snd_ctl_elem_info_set_subdevice(snd_ctl_elem_info_t *obj, unsigned int val);
 void snd_ctl_elem_info_set_name(snd_ctl_elem_info_t *obj, const char *val);
 void snd_ctl_elem_info_set_index(snd_ctl_elem_info_t *obj, unsigned int val);
+void snd_ctl_elem_info_set_read_write(snd_ctl_elem_info_t *obj, int rval, int wval);
+void snd_ctl_elem_info_set_tlv_read_write(snd_ctl_elem_info_t *obj, int rval, int wval);
+void snd_ctl_elem_info_set_inactive(snd_ctl_elem_info_t *obj, int val);
 
 int snd_ctl_add_integer_elem_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
 				 unsigned int element_count,

@@ -106,3 +106,21 @@ int snd_ctl_async(snd_ctl_t *ctl, int sig, pid_t pid);
 int INTERNAL(snd_ctl_elem_info_get_dimensions)(const snd_ctl_elem_info_t *obj);
 int INTERNAL(snd_ctl_elem_info_get_dimension)(const snd_ctl_elem_info_t *obj, unsigned int idx);
 #endif /* INTERNAL */
+
+int _snd_ctl_open_named_child(snd_ctl_t **pctl, const char *name,
+			      snd_config_t *root, snd_config_t *conf,
+			      int mode, snd_config_t *parent_conf);
+static inline int
+_snd_ctl_open_child(snd_ctl_t **pctl, snd_config_t *root,
+		    snd_config_t *conf, int mode, snd_config_t *parent_conf)
+{
+	return _snd_ctl_open_named_child(pctl, NULL, root, conf, mode, parent_conf);
+}
+
+int __snd_ctl_add_elem_set(snd_ctl_t *ctl, snd_ctl_elem_info_t *info,
+			   unsigned int element_count,
+			   unsigned int member_count);
+
+int __snd_ctl_ascii_elem_id_parse(snd_ctl_elem_id_t *dst,
+				  const char *str,
+				  const char **ret_ptr);

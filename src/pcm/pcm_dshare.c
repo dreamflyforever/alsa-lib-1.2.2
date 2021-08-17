@@ -237,13 +237,13 @@ static int snd_pcm_dshare_status(snd_pcm_t *pcm, snd_pcm_status_t * status)
 	case SNDRV_PCM_STATE_DRAINING:
 	case SNDRV_PCM_STATE_RUNNING:
 		snd_pcm_dshare_sync_ptr0(pcm, status->hw_ptr);
-		status->delay += snd_pcm_mmap_playback_delay(pcm)
-				+ status->avail - dshare->spcm->buffer_size;
+		status->delay += snd_pcm_mmap_playback_delay(pcm);
 		break;
 	default:
 		break;
 	}
 	status->state = snd_pcm_dshare_state(pcm);
+	status->appl_ptr = *pcm->appl.ptr; /* slave PCM doesn't set appl_ptr */
 	status->trigger_tstamp = dshare->trigger_tstamp;
 	status->avail = snd_pcm_mmap_playback_avail(pcm);
 	status->avail_max = status->avail > dshare->avail_max ? status->avail : dshare->avail_max;
@@ -290,7 +290,7 @@ static int snd_pcm_dshare_delay(snd_pcm_t *pcm, snd_pcm_sframes_t *delayp)
 	case SNDRV_PCM_STATE_PREPARED:
 	case SNDRV_PCM_STATE_SUSPENDED:
 	case STATE_RUN_PENDING:
-		*delayp = snd_pcm_mmap_playback_hw_avail(pcm);
+		*delayp = snd_pcm_mmap_playback_delay(pcm);
 		return 0;
 	case SNDRV_PCM_STATE_XRUN:
 		return -EPIPE;
@@ -690,11 +690,10 @@ int snd_pcm_dshare_open(snd_pcm_t **pcmp, const char *name,
 			snd_config_t *root, snd_config_t *sconf,
 			snd_pcm_stream_t stream, int mode)
 {
-	snd_pcm_t *pcm = NULL, *spcm = NULL;
-	snd_pcm_direct_t *dshare = NULL;
+	snd_pcm_t *pcm, *spcm = NULL;
+	snd_pcm_direct_t *dshare;
 	int ret, first_instance;
 	unsigned int chn;
-	int fail_sem_loop = 10;
 
 	assert(pcmp);
 
@@ -703,49 +702,10 @@ int snd_pcm_dshare_open(snd_pcm_t **pcmp, const char *name,
 		return -EINVAL;
 	}
 
-	dshare = calloc(1, sizeof(snd_pcm_direct_t));
-	if (!dshare) {
-		ret = -ENOMEM;
-		goto _err_nosem;
-	}
-	
-	ret = snd_pcm_direct_parse_bindings(dshare, params, opts->bindings);
+	ret = _snd_pcm_direct_new(&pcm, &dshare, SND_PCM_TYPE_DSHARE, name, opts, params, stream, mode);
 	if (ret < 0)
-		goto _err_nosem;
-
-	dshare->ipc_key = opts->ipc_key;
-	dshare->ipc_perm = opts->ipc_perm;
-	dshare->ipc_gid = opts->ipc_gid;
-	dshare->tstamp_type = opts->tstamp_type;
-	dshare->semid = -1;
-	dshare->shmid = -1;
-
-	ret = snd_pcm_new(&pcm, dshare->type = SND_PCM_TYPE_DSHARE, name, stream, mode);
-	if (ret < 0)
-		goto _err_nosem;
-
-	while (1) {
-		ret = snd_pcm_direct_semaphore_create_or_connect(dshare);
-		if (ret < 0) {
-			SNDERR("unable to create IPC semaphore");
-			goto _err_nosem;
-		}
-	
-		ret = snd_pcm_direct_semaphore_down(dshare, DIRECT_IPC_SEM_CLIENT);
-		if (ret < 0) {
-			snd_pcm_direct_semaphore_discard(dshare);
-			if (--fail_sem_loop <= 0)
-				goto _err_nosem;
-			continue;
-		}
-		break;
-	}
-
-	first_instance = ret = snd_pcm_direct_shm_create_or_connect(dshare);
-	if (ret < 0) {
-		SNDERR("unable to create IPC shm instance");
-		goto _err;
-	}
+		return ret;
+	first_instance = ret;
 
 	if (!dshare->bindings) {
 		pcm->ops = &snd_pcm_dshare_dummy_ops;
@@ -875,7 +835,7 @@ int snd_pcm_dshare_open(snd_pcm_t **pcmp, const char *name,
 	return 0;
 	
  _err:
-	if (dshare->shmptr)
+	if (dshare->shmptr != (void *) -1)
 		dshare->shmptr->u.dshare.chn_mask &= ~dshare->u.dshare.chn_mask;
 	if (dshare->timer)
 		snd_timer_close(dshare->timer);
@@ -891,12 +851,9 @@ int snd_pcm_dshare_open(snd_pcm_t **pcmp, const char *name,
 	} else
 		snd_pcm_direct_semaphore_up(dshare, DIRECT_IPC_SEM_CLIENT);
  _err_nosem:
-	if (dshare) {
-		free(dshare->bindings);
-		free(dshare);
-	}
-	if (pcm)
-		snd_pcm_free(pcm);
+	free(dshare->bindings);
+	free(dshare);
+	snd_pcm_free(pcm);
 	return ret;
 }
 

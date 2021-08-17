@@ -193,6 +193,7 @@ static int snd_pcm_dsnoop_status(snd_pcm_t *pcm, snd_pcm_status_t * status)
 	snd_pcm_status(dsnoop->spcm, status);
 	state = snd_pcm_state(dsnoop->spcm);
 	status->state = state == SND_PCM_STATE_RUNNING ? dsnoop->state : state;
+	status->appl_ptr = *pcm->appl.ptr; /* slave PCM doesn't set appl_ptr */
 	status->trigger_tstamp = dsnoop->trigger_tstamp;
 	status->avail = snd_pcm_mmap_capture_avail(pcm);
 	status->avail_max = status->avail > dsnoop->avail_max ? status->avail : dsnoop->avail_max;
@@ -563,9 +564,9 @@ int snd_pcm_dsnoop_open(snd_pcm_t **pcmp, const char *name,
 			snd_config_t *root, snd_config_t *sconf,
 			snd_pcm_stream_t stream, int mode)
 {
-	snd_pcm_t *pcm = NULL, *spcm = NULL;
-	snd_pcm_direct_t *dsnoop = NULL;
-	int ret, first_instance, fail_sem_loop = 10;
+	snd_pcm_t *pcm, *spcm = NULL;
+	snd_pcm_direct_t *dsnoop;
+	int ret, first_instance;
 
 	assert(pcmp);
 
@@ -574,50 +575,11 @@ int snd_pcm_dsnoop_open(snd_pcm_t **pcmp, const char *name,
 		return -EINVAL;
 	}
 
-	dsnoop = calloc(1, sizeof(snd_pcm_direct_t));
-	if (!dsnoop) {
-		ret = -ENOMEM;
-		goto _err_nosem;
-	}
-	
-	ret = snd_pcm_direct_parse_bindings(dsnoop, params, opts->bindings);
+	ret = _snd_pcm_direct_new(&pcm, &dsnoop, SND_PCM_TYPE_DSNOOP, name, opts, params, stream, mode);
 	if (ret < 0)
-		goto _err_nosem;
-	
-	dsnoop->ipc_key = opts->ipc_key;
-	dsnoop->ipc_perm = opts->ipc_perm;
-	dsnoop->ipc_gid = opts->ipc_gid;
-	dsnoop->tstamp_type = opts->tstamp_type;
-	dsnoop->semid = -1;
-	dsnoop->shmid = -1;
+		return ret;
+	first_instance = ret;
 
-	ret = snd_pcm_new(&pcm, dsnoop->type = SND_PCM_TYPE_DSNOOP, name, stream, mode);
-	if (ret < 0)
-		goto _err_nosem;
-
-	while (1) {
-		ret = snd_pcm_direct_semaphore_create_or_connect(dsnoop);
-		if (ret < 0) {
-			SNDERR("unable to create IPC semaphore");
-			goto _err_nosem;
-		}
-	
-		ret = snd_pcm_direct_semaphore_down(dsnoop, DIRECT_IPC_SEM_CLIENT);
-		if (ret < 0) {
-			snd_pcm_direct_semaphore_discard(dsnoop);
-			if (--fail_sem_loop <= 0)
-				goto _err_nosem;
-			continue;
-		}
-		break;
-	}
-		
-	first_instance = ret = snd_pcm_direct_shm_create_or_connect(dsnoop);
-	if (ret < 0) {
-		SNDERR("unable to create IPC shm instance");
-		goto _err;
-	}
-		
 	pcm->ops = &snd_pcm_dsnoop_ops;
 	pcm->fast_ops = &snd_pcm_dsnoop_fast_ops;
 	pcm->private_data = dsnoop;
@@ -746,12 +708,9 @@ int snd_pcm_dsnoop_open(snd_pcm_t **pcmp, const char *name,
 		snd_pcm_direct_semaphore_up(dsnoop, DIRECT_IPC_SEM_CLIENT);
 
  _err_nosem:
-	if (dsnoop) {
-		free(dsnoop->bindings);
-		free(dsnoop);
-	}
-	if (pcm)
-		snd_pcm_free(pcm);
+	free(dsnoop->bindings);
+	free(dsnoop);
+	snd_pcm_free(pcm);
 	return ret;
 }
 

@@ -40,18 +40,23 @@
 #include <pthread.h>
 #include "use-case.h"
 
-#define SYNTAX_VERSION_MAX	3
+#define SYNTAX_VERSION_MAX	4
 
 #define MAX_CARD_SHORT_NAME	32
 #define MAX_CARD_LONG_NAME	80
 
-#define SEQUENCE_ELEMENT_TYPE_CDEV	1
-#define SEQUENCE_ELEMENT_TYPE_CSET	2
-#define SEQUENCE_ELEMENT_TYPE_SLEEP	3
-#define SEQUENCE_ELEMENT_TYPE_EXEC	4
-#define SEQUENCE_ELEMENT_TYPE_CSET_BIN_FILE	5
-#define SEQUENCE_ELEMENT_TYPE_CSET_TLV	6
-#define SEQUENCE_ELEMENT_TYPE_CMPT_SEQ	7
+#define SEQUENCE_ELEMENT_TYPE_CDEV		1
+#define SEQUENCE_ELEMENT_TYPE_CSET		2
+#define SEQUENCE_ELEMENT_TYPE_SLEEP		3
+#define SEQUENCE_ELEMENT_TYPE_EXEC		4
+#define SEQUENCE_ELEMENT_TYPE_SHELL		5
+#define SEQUENCE_ELEMENT_TYPE_CSET_BIN_FILE	6
+#define SEQUENCE_ELEMENT_TYPE_CSET_TLV		7
+#define SEQUENCE_ELEMENT_TYPE_CSET_NEW		8
+#define SEQUENCE_ELEMENT_TYPE_CTL_REMOVE	9
+#define SEQUENCE_ELEMENT_TYPE_CMPT_SEQ		10
+#define SEQUENCE_ELEMENT_TYPE_SYSSET		11
+#define SEQUENCE_ELEMENT_TYPE_CFGSAVE		12
 
 struct ucm_value {
         struct list_head list;
@@ -73,6 +78,8 @@ struct sequence_element {
 		char *cdev;
 		char *cset;
 		char *exec;
+		char *sysw;
+		char *cfgsave;
 		struct component_sequence cmpt_seq; /* component sequence */
 	} data;
 };
@@ -116,6 +123,7 @@ struct ctl_list {
 	snd_ctl_t *ctl;
 	snd_ctl_card_info_t *ctl_info;
 	int slave;
+	int ucm_group;
 };
 
 struct ucm_dev_name {
@@ -218,9 +226,16 @@ struct snd_use_case_mgr {
 	char *conf_dir_name;
 	char *comment;
 	int conf_format;
+	unsigned int ucm_card_number;
+
+	/* UCM cards list */
+	struct list_head cards_list;
 
 	/* use case verb, devices and modifier configs parsed from files */
 	struct list_head verb_list;
+
+	/* force boot settings - sequence */
+	struct list_head fixedboot_list;
 
 	/* boot settings - sequence */
 	struct list_head boot_list;
@@ -246,6 +261,9 @@ struct snd_use_case_mgr {
 	/* list of opened control devices */
 	struct list_head ctl_list;
 
+	/* local library configuration */
+	snd_config_t *local_config;
+
 	/* Components don't define cdev, the card device. When executing
 	 * a sequence of a component device, ucm manager enters component
 	 * domain and needs to provide cdev to the component. This cdev
@@ -266,7 +284,9 @@ struct snd_use_case_mgr {
 void uc_mgr_error(const char *fmt, ...);
 void uc_mgr_stdout(const char *fmt, ...);
 
+const char *uc_mgr_sysfs_root(void);
 const char *uc_mgr_config_dir(int format);
+int uc_mgr_config_load_into(int format, const char *file, snd_config_t *cfg);
 int uc_mgr_config_load(int format, const char *file, snd_config_t **cfg);
 int uc_mgr_config_load_file(snd_use_case_mgr_t *uc_mgr,  const char *file, snd_config_t **cfg);
 int uc_mgr_import_master_config(snd_use_case_mgr_t *uc_mgr);
@@ -283,12 +303,22 @@ void uc_mgr_free_transition_element(struct transition_sequence *seq);
 void uc_mgr_free_verb(snd_use_case_mgr_t *uc_mgr);
 void uc_mgr_free(snd_use_case_mgr_t *uc_mgr);
 
+static inline int uc_mgr_has_local_config(snd_use_case_mgr_t *uc_mgr)
+{
+	return uc_mgr && snd_config_iterator_first(uc_mgr->local_config) !=
+			 snd_config_iterator_end(uc_mgr->local_config);
+}
+
+int uc_mgr_card_open(snd_use_case_mgr_t *uc_mgr);
+void uc_mgr_card_close(snd_use_case_mgr_t *uc_mgr);
+
 int uc_mgr_open_ctl(snd_use_case_mgr_t *uc_mgr,
 		    struct ctl_list **ctl_list,
 		    const char *device,
 		    int slave);
 
 struct ctl_list *uc_mgr_get_master_ctl(snd_use_case_mgr_t *uc_mgr);
+struct ctl_list *uc_mgr_get_ctl_by_card(snd_use_case_mgr_t *uc_mgr, int card);
 struct ctl_list *uc_mgr_get_ctl_by_name(snd_use_case_mgr_t *uc_mgr,
 					const char *name, int idx);
 snd_ctl_t *uc_mgr_get_ctl(snd_use_case_mgr_t *uc_mgr);
@@ -328,6 +358,8 @@ int uc_mgr_evaluate_condition(snd_use_case_mgr_t *uc_mgr,
 int uc_mgr_define_regex(snd_use_case_mgr_t *uc_mgr,
 			const char *name,
 			snd_config_t *eval);
+
+int uc_mgr_exec(const char *prog);
 
 /** The name of the environment variable containing the UCM directory */
 #define ALSA_CONFIG_UCM_VAR "ALSA_CONFIG_UCM"

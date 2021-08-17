@@ -488,14 +488,14 @@ static int snd_pcm_dmix_status(snd_pcm_t *pcm, snd_pcm_status_t * status)
 	case SNDRV_PCM_STATE_DRAINING:
 	case SNDRV_PCM_STATE_RUNNING:
 		snd_pcm_dmix_sync_ptr0(pcm, status->hw_ptr);
-		status->delay += snd_pcm_mmap_playback_delay(pcm)
-				+ status->avail - dmix->spcm->buffer_size;
+		status->delay = snd_pcm_mmap_playback_delay(pcm);
 		break;
 	default:
 		break;
 	}
 
 	status->state = snd_pcm_dmix_state(pcm);
+	status->appl_ptr = *pcm->appl.ptr; /* slave PCM doesn't set appl_ptr */
 	status->trigger_tstamp = dmix->trigger_tstamp;
 	status->avail = snd_pcm_mmap_playback_avail(pcm);
 	status->avail_max = status->avail > dmix->avail_max ? status->avail : dmix->avail_max;
@@ -518,7 +518,7 @@ static int snd_pcm_dmix_delay(snd_pcm_t *pcm, snd_pcm_sframes_t *delayp)
 	case SNDRV_PCM_STATE_PREPARED:
 	case SNDRV_PCM_STATE_SUSPENDED:
 	case STATE_RUN_PENDING:
-		*delayp = snd_pcm_mmap_playback_hw_avail(pcm);
+		*delayp = snd_pcm_mmap_playback_delay(pcm);
 		return 0;
 	case SNDRV_PCM_STATE_XRUN:
 		return -EPIPE;
@@ -998,10 +998,9 @@ int snd_pcm_dmix_open(snd_pcm_t **pcmp, const char *name,
 		      snd_config_t *root, snd_config_t *sconf,
 		      snd_pcm_stream_t stream, int mode)
 {
-	snd_pcm_t *pcm = NULL, *spcm = NULL;
-	snd_pcm_direct_t *dmix = NULL;
+	snd_pcm_t *pcm, *spcm = NULL;
+	snd_pcm_direct_t *dmix;
 	int ret, first_instance;
-	int fail_sem_loop = 10;
 
 	assert(pcmp);
 
@@ -1010,50 +1009,11 @@ int snd_pcm_dmix_open(snd_pcm_t **pcmp, const char *name,
 		return -EINVAL;
 	}
 
-	dmix = calloc(1, sizeof(snd_pcm_direct_t));
-	if (!dmix) {
-		ret = -ENOMEM;
-		goto _err_nosem;
-	}
-	
-	ret = snd_pcm_direct_parse_bindings(dmix, params, opts->bindings);
+	ret = _snd_pcm_direct_new(&pcm, &dmix, SND_PCM_TYPE_DMIX, name, opts, params, stream, mode);
 	if (ret < 0)
-		goto _err_nosem;
-	
-	dmix->ipc_key = opts->ipc_key;
-	dmix->ipc_perm = opts->ipc_perm;
-	dmix->ipc_gid = opts->ipc_gid;
-	dmix->tstamp_type = opts->tstamp_type;
-	dmix->semid = -1;
-	dmix->shmid = -1;
+		return ret;
+	first_instance = ret;
 
-	ret = snd_pcm_new(&pcm, dmix->type = SND_PCM_TYPE_DMIX, name, stream, mode);
-	if (ret < 0)
-		goto _err;
-
-	
-	while (1) {
-		ret = snd_pcm_direct_semaphore_create_or_connect(dmix);
-		if (ret < 0) {
-			SNDERR("unable to create IPC semaphore");
-			goto _err_nosem;
-		}
-		ret = snd_pcm_direct_semaphore_down(dmix, DIRECT_IPC_SEM_CLIENT);
-		if (ret < 0) {
-			snd_pcm_direct_semaphore_discard(dmix);
-			if (--fail_sem_loop <= 0)
-				goto _err_nosem;
-			continue;
-		}
-		break;
-	}
-		
-	first_instance = ret = snd_pcm_direct_shm_create_or_connect(dmix);
-	if (ret < 0) {
-		SNDERR("unable to create IPC shm instance");
-		goto _err;
-	}
-		
 	pcm->ops = &snd_pcm_dmix_ops;
 	pcm->fast_ops = &snd_pcm_dmix_fast_ops;
 	pcm->private_data = dmix;
@@ -1194,12 +1154,9 @@ int snd_pcm_dmix_open(snd_pcm_t **pcmp, const char *name,
 	} else
 		snd_pcm_direct_semaphore_up(dmix, DIRECT_IPC_SEM_CLIENT);
  _err_nosem:
-	if (dmix) {
-		free(dmix->bindings);
-		free(dmix);
-	}
-	if (pcm)
-		snd_pcm_free(pcm);
+	free(dmix->bindings);
+	free(dmix);
+	snd_pcm_free(pcm);
 	return ret;
 }
 

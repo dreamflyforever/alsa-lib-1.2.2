@@ -121,6 +121,7 @@ int snd_config_remove(snd_config_t *config);
 int snd_config_delete(snd_config_t *config);
 int snd_config_delete_compound_members(const snd_config_t *config);
 int snd_config_copy(snd_config_t **dst, snd_config_t *src);
+int snd_config_merge(snd_config_t *dst, snd_config_t *src, int override);
 
 int snd_config_make(snd_config_t **config, const char *key,
 		    snd_config_type_t type);
@@ -130,6 +131,8 @@ int snd_config_make_real(snd_config_t **config, const char *key);
 int snd_config_make_string(snd_config_t **config, const char *key);
 int snd_config_make_pointer(snd_config_t **config, const char *key);
 int snd_config_make_compound(snd_config_t **config, const char *key, int join);
+int snd_config_make_path(snd_config_t **config, snd_config_t *root, const char *key,
+			 int join, int override);
 
 int snd_config_imake_integer(snd_config_t **config, const char *key, const long value);
 int snd_config_imake_integer64(snd_config_t **config, const char *key, const long long value);
@@ -140,6 +143,7 @@ int snd_config_imake_pointer(snd_config_t **config, const char *key, const void 
 
 snd_config_type_t snd_config_get_type(const snd_config_t *config);
 int snd_config_is_array(const snd_config_t *config);
+int snd_config_is_empty(const snd_config_t *config);
 
 int snd_config_set_id(snd_config_t *config, const char *id);
 int snd_config_set_integer(snd_config_t *config, long value);
@@ -187,6 +191,7 @@ snd_config_t *snd_config_iterator_entry(const snd_config_iterator_t iterator);
 
 int snd_config_get_bool_ascii(const char *ascii);
 int snd_config_get_bool(const snd_config_t *conf);
+int snd_config_get_card(const snd_config_t *conf);
 int snd_config_get_ctl_iface_ascii(const char *ascii);
 int snd_config_get_ctl_iface(const snd_config_t *conf);
 

@@ -142,13 +142,23 @@ static int snd_pcm_plugin_delay(snd_pcm_t *pcm, snd_pcm_sframes_t *delayp)
 	int err = snd_pcm_delay(plugin->gen.slave, &sd);
 	if (err < 0)
 		return err;
-        if (pcm->stream == SND_PCM_STREAM_CAPTURE &&
-	    pcm->access != SND_PCM_ACCESS_RW_INTERLEAVED &&
-	    pcm->access != SND_PCM_ACCESS_RW_NONINTERLEAVED) {
-                sd += snd_pcm_mmap_capture_avail(pcm);
-        }        
-
 	*delayp = sd;
+	return 0;
+}
+
+static int snd_pcm_plugin_call_init_cb(snd_pcm_t *pcm, snd_pcm_plugin_t *plugin)
+{
+	snd_pcm_t *slave = plugin->gen.slave;
+	int err;
+
+	assert(pcm->boundary == slave->boundary);
+	*pcm->hw.ptr = *slave->hw.ptr;
+	*pcm->appl.ptr = *slave->appl.ptr;
+	if (plugin->init) {
+		err = plugin->init(pcm);
+		if (err < 0)
+			return err;
+	}
 	return 0;
 }
 
@@ -159,14 +169,7 @@ static int snd_pcm_plugin_prepare(snd_pcm_t *pcm)
 	err = snd_pcm_prepare(plugin->gen.slave);
 	if (err < 0)
 		return err;
-	*pcm->hw.ptr = 0;
-	*pcm->appl.ptr = 0;
-	if (plugin->init) {
-		err = plugin->init(pcm);
-		if (err < 0)
-			return err;
-	}
-	return 0;
+	return snd_pcm_plugin_call_init_cb(pcm, plugin);
 }
 
 static int snd_pcm_plugin_reset(snd_pcm_t *pcm)
@@ -176,14 +179,7 @@ static int snd_pcm_plugin_reset(snd_pcm_t *pcm)
 	err = snd_pcm_reset(plugin->gen.slave);
 	if (err < 0)
 		return err;
-	*pcm->hw.ptr = 0;
-	*pcm->appl.ptr = 0;
-	if (plugin->init) {
-		err = plugin->init(pcm);
-		if (err < 0)
-			return err;
-	}
-	return 0;
+	return snd_pcm_plugin_call_init_cb(pcm, plugin);
 }
 
 static snd_pcm_sframes_t snd_pcm_plugin_rewindable(snd_pcm_t *pcm)
@@ -460,101 +456,121 @@ snd_pcm_plugin_mmap_commit(snd_pcm_t *pcm,
 	return xfer > 0 ? xfer : err;
 }
 
+static snd_pcm_sframes_t
+snd_pcm_plugin_sync_hw_ptr_capture(snd_pcm_t *pcm,
+				   snd_pcm_sframes_t slave_size)
+{
+	snd_pcm_plugin_t *plugin = pcm->private_data;
+	snd_pcm_t *slave = plugin->gen.slave;
+	const snd_pcm_channel_area_t *areas;
+	snd_pcm_uframes_t xfer, hw_offset, size;
+	int err;
+
+	xfer = snd_pcm_mmap_capture_avail(pcm);
+	size = pcm->buffer_size - xfer;
+	areas = snd_pcm_mmap_areas(pcm);
+	hw_offset = snd_pcm_mmap_hw_offset(pcm);
+	while (size > 0 && slave_size > 0) {
+		snd_pcm_uframes_t frames = size;
+		snd_pcm_uframes_t cont = pcm->buffer_size - hw_offset;
+		const snd_pcm_channel_area_t *slave_areas;
+		snd_pcm_uframes_t slave_offset;
+		snd_pcm_uframes_t slave_frames = ULONG_MAX;
+		snd_pcm_sframes_t result;
+		/* As mentioned in the ALSA API (see pcm/pcm.c:942):
+		 * The function #snd_pcm_avail_update()
+		 * have to be called before any mmap begin+commit operation.
+		 * Otherwise the snd_pcm_areas_copy will not called a second time.
+		 * But this is needed, if the ring buffer wrap is reached and
+		 * there is more data available.
+		 */
+		slave_size = snd_pcm_avail_update(slave);
+		result = snd_pcm_mmap_begin(slave, &slave_areas, &slave_offset, &slave_frames);
+		if (result < 0) {
+			err = result;
+			goto error;
+		}
+		if (frames > cont)
+			frames = cont;
+		frames = (plugin->read)(pcm, areas, hw_offset, frames,
+					slave_areas, slave_offset, &slave_frames);
+		result = snd_pcm_mmap_commit(slave, slave_offset, slave_frames);
+		if (result > 0 && (snd_pcm_uframes_t)result != slave_frames) {
+			snd_pcm_sframes_t res;
+			res = plugin->undo_read(slave, areas, hw_offset, frames, slave_frames - result);
+			if (res < 0) {
+				err = res;
+				goto error;
+			}
+			frames -= res;
+		}
+		if (result <= 0) {
+			err = result;
+			goto error;
+		}
+		snd_pcm_mmap_hw_forward(pcm, frames);
+		if (frames == cont)
+			hw_offset = 0;
+		else
+			hw_offset += frames;
+		size -= frames;
+		slave_size -= slave_frames;
+		xfer += frames;
+	}
+	return (snd_pcm_sframes_t)xfer;
+error:
+	return xfer > 0 ? (snd_pcm_sframes_t)xfer : err;
+}
+
+static snd_pcm_sframes_t snd_pcm_plugin_sync_hw_ptr(snd_pcm_t *pcm,
+						    snd_pcm_uframes_t slave_hw_ptr,
+						    snd_pcm_sframes_t slave_size)
+{
+	if (pcm->stream == SND_PCM_STREAM_CAPTURE &&
+	    pcm->access != SND_PCM_ACCESS_RW_INTERLEAVED &&
+	    pcm->access != SND_PCM_ACCESS_RW_NONINTERLEAVED)
+		return snd_pcm_plugin_sync_hw_ptr_capture(pcm, slave_size);
+        *pcm->hw.ptr = slave_hw_ptr;
+        return slave_size;
+}
+
 static snd_pcm_sframes_t snd_pcm_plugin_avail_update(snd_pcm_t *pcm)
 {
 	snd_pcm_plugin_t *plugin = pcm->private_data;
 	snd_pcm_t *slave = plugin->gen.slave;
 	snd_pcm_sframes_t slave_size;
-	int err;
 
 	slave_size = snd_pcm_avail_update(slave);
-	if (pcm->stream == SND_PCM_STREAM_CAPTURE &&
-	    pcm->access != SND_PCM_ACCESS_RW_INTERLEAVED &&
-	    pcm->access != SND_PCM_ACCESS_RW_NONINTERLEAVED)
-		goto _capture;
-        *pcm->hw.ptr = *slave->hw.ptr;
-        return slave_size;
- _capture:
- 	{
-		const snd_pcm_channel_area_t *areas;
-		snd_pcm_uframes_t xfer, hw_offset, size;
-		
-		xfer = snd_pcm_mmap_capture_avail(pcm);
-		size = pcm->buffer_size - xfer;
-		areas = snd_pcm_mmap_areas(pcm);
-		hw_offset = snd_pcm_mmap_hw_offset(pcm);
-		while (size > 0 && slave_size > 0) {
-			snd_pcm_uframes_t frames = size;
-			snd_pcm_uframes_t cont = pcm->buffer_size - hw_offset;
-			const snd_pcm_channel_area_t *slave_areas;
-			snd_pcm_uframes_t slave_offset;
-			snd_pcm_uframes_t slave_frames = ULONG_MAX;
-			snd_pcm_sframes_t result;
-			/* As mentioned in the ALSA API (see pcm/pcm.c:942):
-			 * The function #snd_pcm_avail_update()
-			 * have to be called before any mmap begin+commit operation.
-			 * Otherwise the snd_pcm_areas_copy will not called a second time.
-			 * But this is needed, if the ring buffer wrap is reached and
-			 * there is more data available.
-			 */
-			slave_size = snd_pcm_avail_update(slave);
-			result = snd_pcm_mmap_begin(slave, &slave_areas, &slave_offset, &slave_frames);
-			if (result < 0) {
-				err = result;
-				goto error;
-			}
-			if (frames > cont)
-				frames = cont;
-			frames = (plugin->read)(pcm, areas, hw_offset, frames,
-					      slave_areas, slave_offset, &slave_frames);
-			result = snd_pcm_mmap_commit(slave, slave_offset, slave_frames);
-			if (result > 0 && (snd_pcm_uframes_t)result != slave_frames) {
-				snd_pcm_sframes_t res;
-				
-				res = plugin->undo_read(slave, areas, hw_offset, frames, slave_frames - result);
-				if (res < 0) {
-					err = res;
-					goto error;
-				}
-				frames -= res;
-			}
-			if (result <= 0) {
-				err = result;
-				goto error;
-			}
-			snd_pcm_mmap_hw_forward(pcm, frames);
-			if (frames == cont)
-				hw_offset = 0;
-			else
-				hw_offset += frames;
-			size -= frames;
-			slave_size -= slave_frames;
-			xfer += frames;
-		}
-		return (snd_pcm_sframes_t)xfer;
-
-	error:
-		return xfer > 0 ? (snd_pcm_sframes_t)xfer : err;
-	}
+	return snd_pcm_plugin_sync_hw_ptr(pcm, *slave->hw.ptr, slave_size);
 }
 
 static int snd_pcm_plugin_status(snd_pcm_t *pcm, snd_pcm_status_t * status)
 {
 	snd_pcm_plugin_t *plugin = pcm->private_data;
-	snd_pcm_sframes_t err, avail;
-
-	/* sync with the latest hw and appl ptrs */
-	avail = snd_pcm_plugin_avail_update(pcm);
-	if (avail < 0)
-		return avail;
+	snd_pcm_sframes_t err, diff;
 
 	err = snd_pcm_status(plugin->gen.slave, status);
 	if (err < 0)
 		return err;
-	status->appl_ptr = *pcm->appl.ptr;
-	status->hw_ptr = *pcm->hw.ptr;
-	status->avail = avail;
-	status->delay = snd_pcm_mmap_delay(pcm);
+	snd_pcm_plugin_sync_hw_ptr(pcm, status->hw_ptr, status->avail);
+	/*
+	 * For capture stream, the situation is more complicated, because
+	 * snd_pcm_plugin_avail_update() commits the data to the slave pcm.
+	 * It means that the slave appl_ptr is updated. Calculate diff and
+	 * update the delay and avail.
+	 *
+	 * This resolves the data inconsistency for immediate calls:
+	 *    snd_pcm_avail_update()
+	 *    snd_pcm_status()
+	 */
+	if (pcm->stream == SND_PCM_STREAM_CAPTURE) {
+		diff = pcm_frame_diff(status->appl_ptr, *pcm->appl.ptr, pcm->boundary);
+		status->appl_ptr = *pcm->appl.ptr;
+		status->avail += diff;
+		status->delay += diff;
+	} else {
+		assert(status->appl_ptr == *pcm->appl.ptr);
+	}
 	return 0;
 }
 

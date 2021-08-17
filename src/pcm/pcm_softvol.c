@@ -707,7 +707,8 @@ static void snd_pcm_softvol_dump(snd_pcm_t *pcm, snd_output_t *out)
 	snd_pcm_dump(svol->plug.gen.slave, out);
 }
 
-static int add_tlv_info(snd_pcm_softvol_t *svol, snd_ctl_elem_info_t *cinfo)
+static int add_tlv_info(snd_pcm_softvol_t *svol, snd_ctl_elem_info_t *cinfo,
+			unsigned int *old_tlv, size_t old_tlv_size)
 {
 	unsigned int tlv[4];
 	tlv[SNDRV_CTL_TLVO_TYPE] = SND_CTL_TLVT_DB_SCALE;
@@ -715,6 +716,8 @@ static int add_tlv_info(snd_pcm_softvol_t *svol, snd_ctl_elem_info_t *cinfo)
 	tlv[SNDRV_CTL_TLVO_DB_SCALE_MIN] = (int)(svol->min_dB * 100);
 	tlv[SNDRV_CTL_TLVO_DB_SCALE_MUTE_AND_STEP] =
 		(int)((svol->max_dB - svol->min_dB) * 100 / svol->max_val);
+	if (sizeof(tlv) <= old_tlv_size && memcmp(tlv, old_tlv, sizeof(tlv)) == 0)
+		return 0;
 	return snd_ctl_elem_tlv_write(svol->ctl, &cinfo->id, tlv);
 }
 
@@ -725,17 +728,19 @@ static int add_user_ctl(snd_pcm_softvol_t *svol, snd_ctl_elem_info_t *cinfo,
 	int i;
 	unsigned int def_val;
 	
-	if (svol->max_val == 1)
+	if (svol->max_val == 1) {
+		snd_ctl_elem_info_set_read_write(cinfo, 1, 1);
 		err = snd_ctl_add_boolean_elem_set(svol->ctl, cinfo, 1, count);
-	else
+	} else {
 		err = snd_ctl_add_integer_elem_set(svol->ctl, cinfo, 1, count,
 						   0, svol->max_val, 0);
+	}
 	if (err < 0)
 		return err;
 	if (svol->max_val == 1)
 		def_val = 1;
 	else {
-		add_tlv_info(svol, cinfo);
+		add_tlv_info(svol, cinfo, NULL, 0);
 		/* set zero dB value as default, or max_val if
 		   there is no 0 dB setting */
 		def_val = svol->zero_dB_val ? svol->zero_dB_val : svol->max_val;
@@ -811,13 +816,18 @@ static int softvol_load_control(snd_pcm_t *pcm, snd_pcm_softvol_t *svol,
 			    cinfo.type != SND_CTL_ELEM_TYPE_BOOLEAN) ||
 			   cinfo.count != (unsigned int)cchannels ||
 			   cinfo.value.integer.min != 0 ||
-			   cinfo.value.integer.max != resolution - 1) {
+			   cinfo.value.integer.max != svol->max_val ||
+			   (svol->max_val > 1 &&
+			    (cinfo.access & SNDRV_CTL_ELEM_ACCESS_TLV_READ) == 0) ||
+			   (svol->max_val < 2 &&
+			    (cinfo.access & SNDRV_CTL_ELEM_ACCESS_TLV_READ) != 0)) {
 			err = snd_ctl_elem_remove(svol->ctl, &cinfo.id);
 			if (err < 0) {
 				SNDERR("Control %s mismatch", tmp_name);
 				return err;
 			}
-			/* reset numid */
+			/* clear cinfo including numid */
+			snd_ctl_elem_info_clear(&cinfo);
 			snd_ctl_elem_info_set_id(&cinfo, ctl_id);
 			if ((err = add_user_ctl(svol, &cinfo, cchannels)) < 0) {
 				SNDERR("Cannot add a control");
@@ -828,8 +838,7 @@ static int softvol_load_control(snd_pcm_t *pcm, snd_pcm_softvol_t *svol,
 			unsigned int tlv[4];
 			err = snd_ctl_elem_tlv_read(svol->ctl, &cinfo.id, tlv,
 						    sizeof(tlv));
-			if (err < 0)
-				add_tlv_info(svol, &cinfo);
+			add_tlv_info(svol, &cinfo, tlv, err < 0 ? 0 : sizeof(tlv));
 		}
 	}
 
@@ -974,9 +983,107 @@ int snd_pcm_softvol_open(snd_pcm_t **pcmp, const char *name,
 	return 0;
 }
 
-/* in pcm_misc.c */
-int snd_pcm_parse_control_id(snd_config_t *conf, snd_ctl_elem_id_t *ctl_id, int *cardp,
-			     int *cchannelsp, int *hwctlp);
+int _snd_pcm_parse_control_id(snd_config_t *conf, snd_ctl_elem_id_t *ctl_id,
+			      int *cardp, int *cchannels)
+{
+	snd_config_iterator_t i, next;
+	int iface = SND_CTL_ELEM_IFACE_MIXER;
+	const char *name = NULL;
+	long index = 0;
+	long device = -1;
+	long subdevice = -1;
+	int err;
+
+	assert(ctl_id && cardp && cchannels);
+
+	*cardp = -1;
+	*cchannels = 2;
+	snd_config_for_each(i, next, conf) {
+		snd_config_t *n = snd_config_iterator_entry(i);
+		const char *id;
+		if (snd_config_get_id(n, &id) < 0)
+			continue;
+		if (strcmp(id, "comment") == 0)
+			continue;
+		if (strcmp(id, "card") == 0) {
+			err = snd_config_get_card(n);
+			if (err < 0)
+				goto _err;
+			*cardp = err;
+			continue;
+		}
+		if (strcmp(id, "iface") == 0 || strcmp(id, "interface") == 0) {
+			err = snd_config_get_ctl_iface(n);
+			if (err < 0)
+				goto _err;
+			iface = err;
+			continue;
+		}
+		if (strcmp(id, "name") == 0) {
+			if ((err = snd_config_get_string(n, &name)) < 0) {
+				SNDERR("field %s is not a string", id);
+				goto _err;
+			}
+			continue;
+		}
+		if (strcmp(id, "index") == 0) {
+			if ((err = snd_config_get_integer(n, &index)) < 0) {
+				SNDERR("field %s is not an integer", id);
+				goto _err;
+			}
+			continue;
+		}
+		if (strcmp(id, "device") == 0) {
+			if ((err = snd_config_get_integer(n, &device)) < 0) {
+				SNDERR("field %s is not an integer", id);
+				goto _err;
+			}
+			continue;
+		}
+		if (strcmp(id, "subdevice") == 0) {
+			if ((err = snd_config_get_integer(n, &subdevice)) < 0) {
+				SNDERR("field %s is not an integer", id);
+				goto _err;
+			}
+			continue;
+		}
+		if (strcmp(id, "count") == 0) {
+			long v;
+			if ((err = snd_config_get_integer(n, &v)) < 0) {
+				SNDERR("field %s is not an integer", id);
+				goto _err;
+			}
+			if (v < 1 || v > 2) {
+				SNDERR("Invalid count %ld", v);
+				goto _err;
+			}
+			*cchannels = v;
+			continue;
+		}
+		SNDERR("Unknown field %s", id);
+		return -EINVAL;
+	}
+	if (name == NULL) {
+		SNDERR("Missing control name");
+		err = -EINVAL;
+		goto _err;
+	}
+	if (device < 0)
+		device = 0;
+	if (subdevice < 0)
+		subdevice = 0;
+
+	snd_ctl_elem_id_set_interface(ctl_id, iface);
+	snd_ctl_elem_id_set_name(ctl_id, name);
+	snd_ctl_elem_id_set_index(ctl_id, index);
+	snd_ctl_elem_id_set_device(ctl_id, device);
+	snd_ctl_elem_id_set_subdevice(ctl_id, subdevice);
+
+	return 0;
+
+ _err:
+	return err;
+}
 
 /*! \page pcm_plugins
 
@@ -1149,8 +1256,7 @@ int _snd_pcm_softvol_open(snd_pcm_t **pcmp, const char *name,
 		snd_config_delete(sconf);
 		if (err < 0)
 			return err;
-		err = snd_pcm_parse_control_id(control, &ctl_id, &card,
-					       &cchannels, NULL);
+		err = _snd_pcm_parse_control_id(control, &ctl_id, &card, &cchannels);
 		if (err < 0) {
 			snd_pcm_close(spcm);
 			return err;
