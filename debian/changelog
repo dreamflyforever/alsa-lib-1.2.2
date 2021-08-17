@@ -1,6 +1,7 @@
-alsa-lib (1.2.4-2) UNRELEASED; urgency=medium
+alsa-lib (1.2.5.1-1) UNRELEASED; urgency=medium
 
   [ Jordi Mallach ]
+  * New upstream release.
   * Acknowledge 1.2.4-1.1 NMU by Thorsten Glaser.
 
   [ Debian Janitor ]
