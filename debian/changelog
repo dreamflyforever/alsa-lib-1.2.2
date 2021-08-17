@@ -1,4 +1,4 @@
-alsa-lib (1.2.5.1-1) UNRELEASED; urgency=medium
+alsa-lib (1.2.5.1-1) unstable; urgency=medium
 
   [ Jordi Mallach ]
   * New upstream release.
@@ -11,7 +11,7 @@ alsa-lib (1.2.5.1-1) UNRELEASED; urgency=medium
   * Set upstream metadata fields: Repository.
   * Fix day-of-week for changelog entry 1.0.11-5.
 
- -- Jordi Mallach <jordi@debian.org>  Fri, 09 Apr 2021 14:36:50 +0200
+ -- Jordi Mallach <jordi@debian.org>  Wed, 18 Aug 2021 00:31:12 +0200
 
 alsa-lib (1.2.4-1.1) unstable; urgency=high
 
