@@ -31,31 +31,11 @@
  */
 
 #include "ucm_local.h"
+#include <stdbool.h>
 #include <dirent.h>
 #include <limits.h>
 
-/* Directories to store UCM configuration files for components, like
- * off-soc codecs or embedded DSPs. Components can define their own
- * devices and sequences, to be reused by sound cards/machines. UCM
- * manager should not scan these component directories.
- * Machine use case files can include component configratuation files
- * via alsaconf syntax:
- * <searchdir:component-directory-name> and <component-conf-file-name>.
- * Alsaconf will import the included files automatically. After including
- * a component file, a machine device's sequence can enable or disable
- * a component device via syntax:
- * enadev "component_device_name"
- * disdev "component_device_name"
- */
-static const char * const component_dir[] = {
-	"codecs",	/* for off-soc codecs */
-	"dsps",		/* for DSPs embedded in SoC */
-	"platforms",	/* for common platform implementations */
-	NULL,		/* terminator */
-};
-
 static int filename_filter(const struct dirent *dirent);
-static int is_component_directory(const char *dir);
 
 static int parse_sequence(snd_use_case_mgr_t *uc_mgr,
 			  struct list_head *base,
@@ -69,6 +49,8 @@ static void ucm_filename(char *fn, size_t fn_len, long version,
 {
 	const char *env = getenv(version > 1 ? ALSA_CONFIG_UCM2_VAR : ALSA_CONFIG_UCM_VAR);
 
+	if (file[0] == '/')
+		file++;
 	if (env == NULL)
 		snprintf(fn, fn_len, "%s/%s/%s%s%s",
 			 snd_config_topdir(), version > 1 ? "ucm2" : "ucm",
@@ -92,7 +74,7 @@ int uc_mgr_config_load_file(snd_use_case_mgr_t *uc_mgr,
 		     file);
 	err = uc_mgr_config_load(uc_mgr->conf_format, filename, cfg);
 	if (err < 0) {
-		uc_error("error: failed to open file %s : %d", filename, -errno);
+		uc_error("error: failed to open file %s: %d", filename, err);
 		return err;
 	}
 	return 0;
@@ -421,6 +403,124 @@ int uc_mgr_evaluate_inplace(snd_use_case_mgr_t *uc_mgr,
 }
 
 /*
+ * Parse one item for alsa-lib config
+ */
+static int parse_libconfig1(snd_use_case_mgr_t *uc_mgr, snd_config_t *cfg)
+{
+	snd_config_iterator_t i, next;
+	snd_config_t *n, *config = NULL;
+	const char *id, *file = NULL;
+	bool substfile = false, substconfig = false;
+	int err;
+
+	if (snd_config_get_id(cfg, &id) < 0)
+		return -EINVAL;
+
+	if (snd_config_get_type(cfg) != SND_CONFIG_TYPE_COMPOUND) {
+		uc_error("compound type expected for %s", id);
+		return -EINVAL;
+	}
+
+	snd_config_for_each(i, next, cfg) {
+		n = snd_config_iterator_entry(i);
+
+		if (snd_config_get_id(n, &id) < 0)
+			return -EINVAL;
+
+		if (strcmp(id, "File") == 0 ||
+		    strcmp(id, "SubstiFile") == 0) {
+			substfile = id[0] == 'S';
+			err = snd_config_get_string(n, &file);
+			if (err < 0)
+				return err;
+			continue;
+		}
+
+		if (strcmp(id, "Config") == 0 ||
+		    strcmp(id, "SubstiConfig") == 0) {
+			substconfig = id[0] == 'S';
+			if (snd_config_get_type(n) != SND_CONFIG_TYPE_COMPOUND)
+				return -EINVAL;
+			config = n;
+			continue;
+		}
+
+		uc_error("unknown field %s", id);
+		return -EINVAL;
+	}
+
+	if (file) {
+		if (substfile) {
+			snd_config_t *cfg;
+			err = uc_mgr_config_load(uc_mgr->conf_format, file, &cfg);
+			if (err < 0)
+				return err;
+			err = uc_mgr_substitute_tree(uc_mgr, cfg);
+			if (err < 0) {
+				snd_config_delete(cfg);
+				return err;
+			}
+			err = snd_config_merge(uc_mgr->local_config, cfg, 0);
+			if (err < 0) {
+				snd_config_delete(cfg);
+				return err;
+			}
+		} else {
+			char filename[PATH_MAX];
+
+			ucm_filename(filename, sizeof(filename), uc_mgr->conf_format,
+				     file[0] == '/' ? NULL : uc_mgr->conf_dir_name,
+				     file);
+			err = uc_mgr_config_load_into(uc_mgr->conf_format, filename, uc_mgr->local_config);
+			if (err < 0)
+				return err;
+		}
+	}
+
+	if (config) {
+		if (substconfig) {
+			err = uc_mgr_substitute_tree(uc_mgr, config);
+			if (err < 0)
+				return err;
+		}
+		err = snd_config_merge(uc_mgr->local_config, config, 0);
+		if (err < 0)
+			return err;
+	}
+
+	return 0;
+}
+
+/*
+ * Parse alsa-lib config
+ */
+static int parse_libconfig(snd_use_case_mgr_t *uc_mgr, snd_config_t *cfg)
+{
+	snd_config_iterator_t i, next;
+	snd_config_t *n;
+	const char *id;
+	int err;
+
+	if (snd_config_get_id(cfg, &id) < 0)
+		return -EINVAL;
+
+	if (snd_config_get_type(cfg) != SND_CONFIG_TYPE_COMPOUND) {
+		uc_error("compound type expected for %s", id);
+		return -EINVAL;
+	}
+
+	snd_config_for_each(i, next, cfg) {
+		n = snd_config_iterator_entry(i);
+
+		err = parse_libconfig1(uc_mgr, n);
+		if (err < 0)
+			return err;
+	}
+
+	return 0;
+}
+
+/*
  * Parse transition
  */
 static int parse_transition(snd_use_case_mgr_t *uc_mgr,
@@ -720,9 +820,10 @@ static int parse_sequence(snd_use_case_mgr_t *uc_mgr,
 
 		if (strcmp(cmd, "cset") == 0) {
 			curr->type = SEQUENCE_ELEMENT_TYPE_CSET;
+cset:
 			err = parse_string_substitute3(uc_mgr, n, &curr->data.cset);
 			if (err < 0) {
-				uc_error("error: cset requires a string!");
+				uc_error("error: %s requires a string!", cmd);
 				return err;
 			}
 			continue;
@@ -754,19 +855,29 @@ static int parse_sequence(snd_use_case_mgr_t *uc_mgr,
 
 		if (strcmp(cmd, "cset-bin-file") == 0) {
 			curr->type = SEQUENCE_ELEMENT_TYPE_CSET_BIN_FILE;
-			err = parse_string_substitute3(uc_mgr, n, &curr->data.cset);
-			if (err < 0) {
-				uc_error("error: cset-bin-file requires a string!");
-				return err;
-			}
-			continue;
+			goto cset;
 		}
 
 		if (strcmp(cmd, "cset-tlv") == 0) {
 			curr->type = SEQUENCE_ELEMENT_TYPE_CSET_TLV;
-			err = parse_string_substitute3(uc_mgr, n, &curr->data.cset);
+			goto cset;
+		}
+
+		if (strcmp(cmd, "cset-new") == 0) {
+			curr->type = SEQUENCE_ELEMENT_TYPE_CSET_NEW;
+			goto cset;
+		}
+
+		if (strcmp(cmd, "ctl-remove") == 0) {
+			curr->type = SEQUENCE_ELEMENT_TYPE_CTL_REMOVE;
+			goto cset;
+		}
+
+		if (strcmp(cmd, "sysw") == 0) {
+			curr->type = SEQUENCE_ELEMENT_TYPE_SYSSET;
+			err = parse_string_substitute3(uc_mgr, n, &curr->data.sysw);
 			if (err < 0) {
-				uc_error("error: cset-tlv requires a string!");
+				uc_error("error: sysw requires a string!");
 				return err;
 			}
 			continue;
@@ -795,6 +906,7 @@ static int parse_sequence(snd_use_case_mgr_t *uc_mgr,
 
 		if (strcmp(cmd, "exec") == 0) {
 			curr->type = SEQUENCE_ELEMENT_TYPE_EXEC;
+exec:
 			err = parse_string_substitute3(uc_mgr, n, &curr->data.exec);
 			if (err < 0) {
 				uc_error("error: exec requires a string!");
@@ -802,7 +914,28 @@ static int parse_sequence(snd_use_case_mgr_t *uc_mgr,
 			}
 			continue;
 		}
-		
+
+		if (strcmp(cmd, "shell") == 0) {
+			curr->type = SEQUENCE_ELEMENT_TYPE_SHELL;
+			goto exec;
+		}
+
+		if (strcmp(cmd, "cfg-save") == 0) {
+			curr->type = SEQUENCE_ELEMENT_TYPE_CFGSAVE;
+			err = parse_string_substitute3(uc_mgr, n, &curr->data.cfgsave);
+			if (err < 0) {
+				uc_error("error: sysw requires a string!");
+				return err;
+			}
+			continue;
+		}
+
+		if (strcmp(cmd, "comment") == 0)
+			goto skip;
+
+		uc_error("error: sequence command '%s' is ignored", cmd);
+
+skip:
 		list_del(&curr->list);
 		uc_mgr_free_sequence_element(curr);
 	}
@@ -1575,7 +1708,7 @@ static int parse_verb_file(snd_use_case_mgr_t *uc_mgr,
 	/* in-place evaluation */
 	err = uc_mgr_evaluate_inplace(uc_mgr, cfg);
 	if (err < 0)
-		return err;
+		goto _err;
 
 	/* parse master config sections */
 	snd_config_for_each(i, next, cfg) {
@@ -1627,6 +1760,7 @@ static int parse_verb_file(snd_use_case_mgr_t *uc_mgr,
 						file);
 				goto _err;
 			}
+			continue;
 		}
 
 		/* device remove */
@@ -1637,6 +1771,17 @@ static int parse_verb_file(snd_use_case_mgr_t *uc_mgr,
 						file);
 				goto _err;
 			}
+			continue;
+		}
+
+		/* alsa-lib configuration */
+		if (uc_mgr->conf_format > 3 && strcmp(id, "LibraryConfig") == 0) {
+			err = parse_libconfig(uc_mgr, n);
+			if (err < 0) {
+				uc_error("error: failed to parse LibConfig");
+				goto _err;
+			}
+			continue;
 		}
 	}
 
@@ -1737,6 +1882,26 @@ __error:
 	free(file);
 	free(comment);
 	return err;
+}
+
+/*
+ * parse controls which should be run only at initial boot (forcefully)
+ */
+static int parse_controls_fixedboot(snd_use_case_mgr_t *uc_mgr, snd_config_t *cfg)
+{
+	int err;
+
+	if (!list_empty(&uc_mgr->fixedboot_list)) {
+		uc_error("FixedBoot list is not empty");
+		return -EINVAL;
+	}
+	err = parse_sequence(uc_mgr, &uc_mgr->fixedboot_list, cfg);
+	if (err < 0) {
+		uc_error("Unable to parse FixedBootSequence");
+		return err;
+	}
+
+	return 0;
 }
 
 /*
@@ -1891,6 +2056,14 @@ static int parse_master_file(snd_use_case_mgr_t *uc_mgr, snd_config_t *cfg)
 			continue;
 		}
 
+		/* find default control values section (force boot sequence only) */
+		if (strcmp(id, "FixedBootSequence") == 0) {
+			err = parse_controls_fixedboot(uc_mgr, n);
+			if (err < 0)
+				return err;
+			continue;
+		}
+
 		/* find default control values section (first boot only) */
 		if (strcmp(id, "BootSequence") == 0) {
 			err = parse_controls_boot(uc_mgr, n);
@@ -1917,11 +2090,21 @@ static int parse_master_file(snd_use_case_mgr_t *uc_mgr, snd_config_t *cfg)
 			continue;
 		}
 
+		/* alsa-lib configuration */
+		if (uc_mgr->conf_format > 3 && strcmp(id, "LibraryConfig") == 0) {
+			err = parse_libconfig(uc_mgr, n);
+			if (err < 0) {
+				uc_error("error: failed to parse LibraryConfig");
+				return err;
+			}
+			continue;
+		}
+
 		/* error */
 		if (strcmp(id, "Error") == 0)
 			return error_node(uc_mgr, n);
 
-		uc_error("uknown master file field %s", id);
+		uc_error("unknown master file field %s", id);
 	}
 	return 0;
 }
@@ -2160,7 +2343,17 @@ static int parse_toplevel_config(snd_use_case_mgr_t *uc_mgr,
 			continue;
 		}
 
-		uc_error("uknown toplevel field %s", id);
+		/* alsa-lib configuration */
+		if (uc_mgr->conf_format > 3 && strcmp(id, "LibraryConfig") == 0) {
+			err = parse_libconfig(uc_mgr, n);
+			if (err < 0) {
+				uc_error("error: failed to parse LibConfig");
+				return err;
+			}
+			continue;
+		}
+
+		uc_error("unknown toplevel field %s", id);
 	}
 
 	return -ENOENT;
@@ -2260,20 +2453,6 @@ static int filename_filter(const struct dirent *dirent)
 	return 0;
 }
 
-/* whether input dir is a predefined component directory */
-static int is_component_directory(const char *dir)
-{
-	int i = 0;
-
-	while (component_dir[i]) {
-		if (!strncmp(dir, component_dir[i], PATH_MAX))
-			return 1;
-		i++;
-	};
-
-	return 0;
-}
-
 /* scan all cards and comments
  *
  * Cards are defined by machines. Each card/machine installs its UCM
@@ -2294,9 +2473,9 @@ int uc_mgr_scan_master_configs(const char **_list[])
 	struct dirent **namelist;
 
 	if (env)
-		snprintf(filename, sizeof(filename), "%s", env);
+		snprintf(filename, sizeof(filename), "%s/conf.virt.d", env);
 	else
-		snprintf(filename, sizeof(filename), "%s/ucm2",
+		snprintf(filename, sizeof(filename), "%s/ucm2/conf.virt.d",
 			 snd_config_topdir());
 
 #if defined(_GNU_SOURCE) && !defined(__NetBSD__) && !defined(__FreeBSD__) && !defined(__sun) && !defined(ANDROID)
@@ -2337,13 +2516,13 @@ int uc_mgr_scan_master_configs(const char **_list[])
 
 		d_name = namelist[i]->d_name;
 
-		/* Skip the directories for component devices */
-		if (is_component_directory(d_name))
-			continue;
-
 		snprintf(fn, sizeof(fn), "%s.conf", d_name);
 		ucm_filename(filename, sizeof(filename), 2, d_name, fn);
+#ifdef HAVE_EACCESS
 		if (eaccess(filename, R_OK))
+#else
+		if (access(filename, R_OK))
+#endif
 			continue;
 
 		err = uc_mgr_config_load(2, filename, &cfg);

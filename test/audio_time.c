@@ -19,7 +19,6 @@
 #include <math.h>
 #include "../include/asoundlib.h"
 
-static char *command;
 static char *pcm_name = "hw:0";
 snd_output_t *output = NULL;
 
@@ -32,7 +31,7 @@ static void usage(char *command)
 		"-d, --delay             add delay \n"
 		"-D, --device=NAME       select PCM by name \n"
 		"-p, --playback          playback tstamps \n"
-		"-t, --ts_type=TYPE      Default(0),link(1),link_estimated(2),synchronized(3) \n"
+		"-t, --ts_type=TYPE      Compat(0),default(1),link(2),link_absolute(3),link_estimated(4),link_synchronized(5) \n"
 		"-r, --report            show audio timestamp and accuracy validity\n"
 		, command);
 }
@@ -42,7 +41,7 @@ long long timestamp2ns(snd_htimestamp_t t)
 {
 	long long nsec;
 
-	nsec = t.tv_sec * 1000000000;
+	nsec = t.tv_sec * 1000000000ULL;
 	nsec += t.tv_nsec;
 
 	return nsec;
@@ -149,7 +148,7 @@ int main(int argc, char *argv[])
 	while ((c = getopt_long(argc, argv, short_options, long_options, &option_index)) != -1) {
 		switch (c) {
 		case 'h':
-			usage(command);
+			usage(argv[0]);
 			return 0;
 		case 'p':
 			do_playback = 1;
@@ -201,17 +200,17 @@ int main(int argc, char *argv[])
 			goto _exit;
 		}
 
-		if (snd_pcm_hw_params_supports_audio_ts_type(hwparams_p, 0))
+		if (snd_pcm_hw_params_supports_audio_ts_type(hwparams_p, SND_PCM_AUDIO_TSTAMP_TYPE_COMPAT))
 			printf("Playback supports audio compat timestamps\n");
-		if (snd_pcm_hw_params_supports_audio_ts_type(hwparams_p, 1))
+		if (snd_pcm_hw_params_supports_audio_ts_type(hwparams_p, SND_PCM_AUDIO_TSTAMP_TYPE_DEFAULT))
 			printf("Playback supports audio default timestamps\n");
-		if (snd_pcm_hw_params_supports_audio_ts_type(hwparams_p, 2))
+		if (snd_pcm_hw_params_supports_audio_ts_type(hwparams_p, SND_PCM_AUDIO_TSTAMP_TYPE_LINK))
 			printf("Playback supports audio link timestamps\n");
-		if (snd_pcm_hw_params_supports_audio_ts_type(hwparams_p, 3))
+		if (snd_pcm_hw_params_supports_audio_ts_type(hwparams_p, SND_PCM_AUDIO_TSTAMP_TYPE_LINK_ABSOLUTE))
 			printf("Playback supports audio link absolute timestamps\n");
-		if (snd_pcm_hw_params_supports_audio_ts_type(hwparams_p, 4))
+		if (snd_pcm_hw_params_supports_audio_ts_type(hwparams_p, SND_PCM_AUDIO_TSTAMP_TYPE_LINK_ESTIMATED))
 			printf("Playback supports audio link estimated timestamps\n");
-		if (snd_pcm_hw_params_supports_audio_ts_type(hwparams_p, 5))
+		if (snd_pcm_hw_params_supports_audio_ts_type(hwparams_p, SND_PCM_AUDIO_TSTAMP_TYPE_LINK_SYNCHRONIZED))
 			printf("Playback supports audio link synchronized timestamps\n");
 
 		snd_pcm_sw_params_alloca(&swparams_p);
@@ -269,17 +268,17 @@ int main(int argc, char *argv[])
 			goto _exit;
 		}
 
-		if (snd_pcm_hw_params_supports_audio_ts_type(hwparams_c, 0))
+		if (snd_pcm_hw_params_supports_audio_ts_type(hwparams_c, SND_PCM_AUDIO_TSTAMP_TYPE_COMPAT))
 			printf("Capture supports audio compat timestamps\n");
-		if (snd_pcm_hw_params_supports_audio_ts_type(hwparams_c, 1))
+		if (snd_pcm_hw_params_supports_audio_ts_type(hwparams_c, SND_PCM_AUDIO_TSTAMP_TYPE_DEFAULT))
 			printf("Capture supports audio default timestamps\n");
-		if (snd_pcm_hw_params_supports_audio_ts_type(hwparams_c, 2))
+		if (snd_pcm_hw_params_supports_audio_ts_type(hwparams_c, SND_PCM_AUDIO_TSTAMP_TYPE_LINK))
 			printf("Capture supports audio link timestamps\n");
-		if (snd_pcm_hw_params_supports_audio_ts_type(hwparams_c, 3))
+		if (snd_pcm_hw_params_supports_audio_ts_type(hwparams_c, SND_PCM_AUDIO_TSTAMP_TYPE_LINK_ABSOLUTE))
 			printf("Capture supports audio link absolute timestamps\n");
-		if (snd_pcm_hw_params_supports_audio_ts_type(hwparams_c, 4))
+		if (snd_pcm_hw_params_supports_audio_ts_type(hwparams_c, SND_PCM_AUDIO_TSTAMP_TYPE_LINK_ESTIMATED))
 			printf("Capture supports audio link estimated timestamps\n");
-		if (snd_pcm_hw_params_supports_audio_ts_type(hwparams_c, 5))
+		if (snd_pcm_hw_params_supports_audio_ts_type(hwparams_c, SND_PCM_AUDIO_TSTAMP_TYPE_LINK_SYNCHRONIZED))
 			printf("Capture supports audio link synchronized timestamps\n");
 
 		snd_pcm_sw_params_alloca(&swparams_c);

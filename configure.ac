@@ -1,6 +1,6 @@
 dnl Process this file with autoconf to produce a configure script.
 AC_PREREQ(2.59)
-AC_INIT(alsa-lib, 1.2.4)
+AC_INIT(alsa-lib, 1.2.5.1)
 
 AC_CONFIG_SRCDIR([src/control/control.c])
 AC_CONFIG_MACRO_DIR([m4])
@@ -50,6 +50,7 @@ AC_HEADER_TIME
 dnl Checks for library functions.
 AC_PROG_GCC_TRADITIONAL
 AC_CHECK_FUNCS([uselocale])
+AC_CHECK_FUNCS([eaccess])
 
 SAVE_LIBRARY_VERSION
 AC_SUBST(LIBTOOL_VERSION_INFO)
@@ -659,7 +660,7 @@ AC_ARG_WITH(ctl-plugins,
     [build control plugins (default = all)]),
   [ctl_plugins="$withval"], [ctl_plugins="all"])
 
-CTL_PLUGIN_LIST="shm ext"
+CTL_PLUGIN_LIST="remap shm ext"
 
 build_ctl_plugin="no"
 for t in $CTL_PLUGIN_LIST; do
@@ -681,6 +682,7 @@ if test "$ac_cv_header_sys_shm_h" != "yes"; then
 fi
 
 AM_CONDITIONAL([BUILD_CTL_PLUGIN], [test x$build_ctl_plugin = xyes])
+AM_CONDITIONAL([BUILD_CTL_PLUGIN_REMAP], [test x$build_ctl_remap = xyes])
 AM_CONDITIONAL([BUILD_CTL_PLUGIN_SHM], [test x$build_ctl_shm = xyes])
 AM_CONDITIONAL([BUILD_CTL_PLUGIN_EXT], [test x$build_ctl_ext = xyes])
 
@@ -739,6 +741,7 @@ AC_OUTPUT(Makefile doc/Makefile doc/pictures/Makefile doc/doxygen.cfg \
           src/alisp/Makefile src/topology/Makefile \
 	  src/conf/Makefile \
 	  src/conf/cards/Makefile \
+	  src/conf/ctl/Makefile \
 	  src/conf/pcm/Makefile \
 	  modules/Makefile modules/mixer/Makefile modules/mixer/simple/Makefile \
 	  alsalisp/Makefile aserver/Makefile \

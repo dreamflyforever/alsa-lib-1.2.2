@@ -31,10 +31,13 @@
  */
 
 #include "ucm_local.h"
+#include "../control/control_local.h"
+#include <stdbool.h>
 #include <ctype.h>
 #include <stdarg.h>
 #include <pthread.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <limits.h>
 
 /*
@@ -48,9 +51,9 @@ static int get_value(snd_use_case_mgr_t *uc_mgr,
 			const char *verb_name,
 			int exact);
 static int get_value1(snd_use_case_mgr_t *uc_mgr, char **value,
-                      struct list_head *value_list, const char *identifier);
+		      struct list_head *value_list, const char *identifier);
 static int get_value3(snd_use_case_mgr_t *uc_mgr,
-                      char **value,
+		      char **value,
 		      const char *identifier,
 		      struct list_head *value_list1,
 		      struct list_head *value_list2,
@@ -79,30 +82,30 @@ static int check_identifier(const char *identifier, const char *prefix)
 
 static int list_count(struct list_head *list)
 {
-        struct list_head *pos;
-        int count = 0;
-        
-        list_for_each(pos, list) {
-                count += 1;
-        }
-        return count;
+	struct list_head *pos;
+	int count = 0;
+
+	list_for_each(pos, list) {
+		count += 1;
+	}
+	return count;
 }
 
 static int alloc_str_list(struct list_head *list, int mult, char **result[])
 {
-        char **res;
-        int cnt;
-        
-        cnt = list_count(list) * mult;
-        if (cnt == 0) {
+	char **res;
+	int cnt;
+
+	cnt = list_count(list) * mult;
+	if (cnt == 0) {
 		*result = NULL;
-                return cnt;
+		return cnt;
 	}
-        res = calloc(mult, cnt * sizeof(char *));
-        if (res == NULL)
-                return -ENOMEM;
-        *result = res;
-        return cnt;
+	res = calloc(mult, cnt * sizeof(char *));
+	if (res == NULL)
+		return -ENOMEM;
+	*result = res;
+	return cnt;
 }
 
 /**
@@ -138,12 +141,12 @@ char *snd_use_case_identifier(const char *fmt, ...)
  */
 int snd_use_case_free_list(const char *list[], int items)
 {
-        int i;
+	int i;
 	if (list == NULL)
 		return 0;
-        for (i = 0; i < items; i++)
+	for (i = 0; i < items; i++)
 		free((void *)list[i]);
-        free(list);
+	free(list);
 	return 0;
 }
 
@@ -252,9 +255,138 @@ static int binary_file_parse(snd_ctl_elem_value_t *dst,
 	return err;
 }
 
-extern int __snd_ctl_ascii_elem_id_parse(snd_ctl_elem_id_t *dst,
-					 const char *str,
-					 const char **ret_ptr);
+static const char *parse_type(const char *p, const char *prefix, size_t len,
+			      snd_ctl_elem_info_t *info)
+{
+	if (strncasecmp(p, prefix, len))
+		return p;
+	p += len;
+	if (info->type != SND_CTL_ELEM_TYPE_NONE)
+		return NULL;
+	if (strncasecmp(p, "bool", sizeof("bool") - 1) == 0)
+		info->type = SND_CTL_ELEM_TYPE_BOOLEAN;
+	else if (strncasecmp(p, "integer64", sizeof("integer64") - 1) == 0)
+		info->type = SND_CTL_ELEM_TYPE_INTEGER64;
+	else if (strncasecmp(p, "int64", sizeof("int64") - 1) == 0)
+		info->type = SND_CTL_ELEM_TYPE_INTEGER64;
+	else if (strncasecmp(p, "int", sizeof("int") - 1) == 0)
+		info->type = SND_CTL_ELEM_TYPE_INTEGER;
+	else if (strncasecmp(p, "enum", sizeof("enum") - 1) == 0)
+		info->type = SND_CTL_ELEM_TYPE_ENUMERATED;
+	else if (strncasecmp(p, "bytes", sizeof("bytes") - 1) == 0)
+		info->type = SND_CTL_ELEM_TYPE_BYTES;
+	else
+		return NULL;
+	while (isalpha(*p))
+		p++;
+	return p;
+}
+
+static const char *parse_uint(const char *p, const char *prefix, size_t len,
+			      unsigned int min, unsigned int max, unsigned int *rval)
+{
+	long v;
+	char *end;
+
+	if (strncasecmp(p, prefix, len))
+		return p;
+	p += len;
+	v = strtol(p, &end, 0);
+	if (*end != '\0' && *end != ' ' && *end != ',') {
+		uc_error("unable to parse '%s'", prefix);
+		return NULL;
+	}
+	if (v < min || v > max) {
+		uc_error("value '%s' out of range %u-%u %(%ld)", min, max, v);
+		return NULL;
+	}
+	*rval = v;
+	return end;
+}
+
+static const char *parse_labels(const char *p, const char *prefix, size_t len,
+				snd_ctl_elem_info_t *info)
+{
+	const char *s;
+	char *buf, *bp;
+	size_t l;
+	int c;
+
+	if (info->type != SND_CTL_ELEM_TYPE_ENUMERATED)
+		return NULL;
+	if (strncasecmp(p, prefix, len))
+		return p;
+	p += len;
+	s = p;
+	c = *s;
+	l = 0;
+	if (c == '\'' || c == '\"') {
+		s++;
+		while (*s && *s != c) {
+			s++, l++;
+		}
+		if (*s == c)
+			s++;
+	} else {
+		while (*s && *s != ',')
+			l++;
+	}
+	if (l == 0)
+		return NULL;
+	buf = malloc(l + 1);
+	if (buf == NULL)
+		return NULL;
+	memcpy(buf, p + ((c == '\'' || c == '\"') ? 1 : 0), l);
+	buf[l] = '\0';
+	info->value.enumerated.items = 1;
+	for (bp = buf; *bp; bp++) {
+		if (*bp == ';') {
+			if (bp == buf || bp[1] == ';') {
+				free(buf);
+				return NULL;
+			}
+			info->value.enumerated.items++;
+			*bp = '\0';
+		}
+	}
+	info->value.enumerated.names_ptr = (uintptr_t)buf;
+	info->value.enumerated.names_length = l + 1;
+	return s;
+}
+
+static int parse_cset_new_info(snd_ctl_elem_info_t *info, const char *s, const char **pos)
+{
+	const char *p = s, *op;
+
+	info->count = 1;
+	while (*s) {
+		op = p;
+		p = parse_type(p, "type=", sizeof("type=") - 1, info);
+		if (p != op)
+			goto next;
+		p = parse_uint(p, "elements=", sizeof("elements=") - 1, 1, 128, (unsigned int *)&info->owner);
+		if (p != op)
+			goto next;
+		p = parse_uint(p, "count=", sizeof("count=") - 1, 1, 128, &info->count);
+		if (p != op)
+			goto next;
+		p = parse_labels(p, "labels=", sizeof("labels=") - 1, info);
+next:
+		if (p == NULL)
+			goto er;
+		if (*p == ',')
+			p++;
+		if (isspace(*p))
+			break;
+		if (op == p)
+			goto er;
+	}
+	*pos = p;
+	return 0;
+er:
+	uc_error("unknown syntax '%s'", p);
+	return -EINVAL;
+}
 
 static int execute_cset(snd_ctl_t *ctl, const char *cset, unsigned int type)
 {
@@ -262,7 +394,7 @@ static int execute_cset(snd_ctl_t *ctl, const char *cset, unsigned int type)
 	int err;
 	snd_ctl_elem_id_t *id;
 	snd_ctl_elem_value_t *value;
-	snd_ctl_elem_info_t *info;
+	snd_ctl_elem_info_t *info, *info2 = NULL;
 	unsigned int *res = NULL;
 
 	snd_ctl_elem_id_malloc(&id);
@@ -274,14 +406,53 @@ static int execute_cset(snd_ctl_t *ctl, const char *cset, unsigned int type)
 		goto __fail;
 	while (*pos && isspace(*pos))
 		pos++;
+	if (type == SEQUENCE_ELEMENT_TYPE_CSET_NEW) {
+		snd_ctl_elem_info_malloc(&info2);
+		snd_ctl_elem_info_set_id(info2, id);
+		err = parse_cset_new_info(info2, pos, &pos);
+		if (err < 0 || !*pos) {
+			uc_error("undefined or wrong id config for cset-new", cset);
+			err = -EINVAL;
+			goto __fail;
+		}
+		while (*pos && isspace(*pos))
+			pos++;
+	}
 	if (!*pos) {
-		uc_error("undefined value for cset >%s<", cset);
+		if (type != SEQUENCE_ELEMENT_TYPE_CTL_REMOVE) {
+			uc_error("undefined value for cset >%s<", cset);
+			err = -EINVAL;
+			goto __fail;
+		}
+	} else if (type == SEQUENCE_ELEMENT_TYPE_CTL_REMOVE) {
+		uc_error("extra value for ctl-remove >%s<", cset);
 		err = -EINVAL;
 		goto __fail;
 	}
+
 	snd_ctl_elem_info_set_id(info, id);
 	err = snd_ctl_elem_info(ctl, info);
-	if (err < 0)
+	if (type == SEQUENCE_ELEMENT_TYPE_CSET_NEW ||
+	    type == SEQUENCE_ELEMENT_TYPE_CTL_REMOVE) {
+		if (err >= 0) {
+			err = snd_ctl_elem_remove(ctl, id);
+			if (err < 0) {
+				uc_error("unable to remove control");
+				err = -EINVAL;
+				goto __fail;
+			}
+		}
+		if (type == SEQUENCE_ELEMENT_TYPE_CTL_REMOVE)
+			goto __ok;
+		err = __snd_ctl_add_elem_set(ctl, info2, info2->owner, info2->count);
+		if (err < 0) {
+			uc_error("unable to create new control");
+			goto __fail;
+		}
+		/* new id copy */
+		snd_ctl_elem_info_get_id(info2, id);
+		snd_ctl_elem_info_set_id(info, id);
+	} else if (err < 0)
 		goto __fail;
 	if (type == SEQUENCE_ELEMENT_TYPE_CSET_TLV) {
 		if (!snd_ctl_elem_info_is_tlv_writable(info)) {
@@ -308,19 +479,185 @@ static int execute_cset(snd_ctl_t *ctl, const char *cset, unsigned int type)
 		err = snd_ctl_elem_write(ctl, value);
 		if (err < 0)
 			goto __fail;
+		if (type == SEQUENCE_ELEMENT_TYPE_CSET_NEW) {
+			unsigned int idx;
+			for (idx = 1; idx < (unsigned int)info2->owner; idx++) {
+				value->id.numid += 1;
+				err = snd_ctl_elem_write(ctl, value);
+				if (err < 0)
+					goto __fail;
+			}
+		}
 	}
+      __ok:
 	err = 0;
       __fail:
-	if (id != NULL)
-		free(id);
-	if (value != NULL)
-		free(value);
-	if (info != NULL)
-		free(info);
-	if (res != NULL)
-		free(res);
+	free(id);
+	free(value);
+	if (info2) {
+		if (info2->type == SND_CTL_ELEM_TYPE_ENUMERATED)
+			free((void *)info2->value.enumerated.names_ptr);
+		free(info2);
+	}
+	free(info);
+	free(res);
 
 	return err;
+}
+
+static int execute_sysw(const char *sysw)
+{
+	char path[PATH_MAX];
+	const char *e;
+	char *s, *value;
+	ssize_t wlen;
+	size_t len;
+	int fd, myerrno;
+	bool ignore_error = false;
+
+	if (sysw == NULL || *sysw == '\0')
+		return 0;
+
+	if (sysw[0] == '-') {
+		ignore_error = true;
+		sysw++;
+	}
+
+	if (sysw[0] == ':')
+		return -EINVAL;
+
+	s = strdup(sysw[0] != '/' ? sysw : sysw + 1);
+	if (s == NULL)
+		return -ENOMEM;
+
+	value = strchr(s, ':');
+	if (!value) {
+		free(s);
+		return -EINVAL;
+	}
+	*value = '\0';
+	value++;
+	len = strlen(value);
+	if (len < 1) {
+		free(s);
+		return -EINVAL;
+	}
+
+	e = uc_mgr_sysfs_root();
+	if (e == NULL) {
+		free(s);
+		return -EINVAL;
+	}
+	snprintf(path, sizeof(path), "%s/%s", e, s);
+
+	fd = open(path, O_WRONLY|O_CLOEXEC);
+	if (fd < 0) {
+		free(s);
+		if (ignore_error)
+			return 0;
+		uc_error("unable to open '%s' for write", path);
+		return -EINVAL;
+	}
+	wlen = write(fd, value, len);
+	myerrno = errno;
+	close(fd);
+	free(s);
+
+	if (ignore_error)
+		return 0;
+
+	if (wlen != (ssize_t)len) {
+		uc_error("unable to write '%s' to '%s': %s", value, path, strerror(myerrno));
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+int _snd_config_save_node_value(snd_config_t *n, snd_output_t *out, unsigned int level);
+
+static int execute_cfgsave(snd_use_case_mgr_t *uc_mgr, const char *filename)
+{
+	snd_config_t *config = uc_mgr->local_config;
+	char *file, *root;
+	snd_output_t *out;
+	bool with_root = false;
+	int err = 0;
+
+	file = strdup(filename);
+	if (!file)
+		return -ENOMEM;
+	root = strchr(file, ':');
+	if (config && root) {
+		*root++ = '\0';
+		if (*root == '+') {
+			with_root = true;
+			root++;
+		}
+		err = snd_config_search(config, root, &config);
+		if (err < 0) {
+			uc_error("Unable to find subtree '%s'", root);
+			goto _err;
+		}
+	}
+
+	err = snd_output_stdio_open(&out, file, "w+");
+	if (err < 0) {
+		uc_error("unable to open file '%s': %s", file, snd_strerror(err));
+		goto _err;
+	}
+	if (!config || snd_config_is_empty(config)) {
+		snd_output_close(out);
+		goto _err;
+	}
+	if (with_root) {
+		snd_output_printf(out, "%s ", root);
+		err = _snd_config_save_node_value(config, out, 0);
+	} else {
+		err = snd_config_save(config, out);
+	}
+	snd_output_close(out);
+	if (err < 0) {
+		uc_error("unable to save configuration: %s", snd_strerror(err));
+		goto _err;
+	}
+_err:
+	free(file);
+	return err;
+}
+
+static int rewrite_device_value(snd_use_case_mgr_t *uc_mgr, const char *name, char **value)
+{
+	char *sval;
+	size_t l;
+	static const char **s, *_prefix[] = {
+		"PlaybackCTL",
+		"CaptureCTL",
+		"PlaybackMixer",
+		"CaptureMixer",
+		"PlaybackPCM",
+		"CapturePCM",
+		NULL
+	};
+
+	if (!uc_mgr_has_local_config(uc_mgr))
+		return 0;
+	for (s = _prefix; *s && *value; s++) {
+		if (strcmp(*s, name) != 0)
+			continue;
+		l = strlen(*value) + 9 + 1;
+		sval = malloc(l);
+		if (sval == NULL) {
+			free(*value);
+			*value = NULL;
+			return -ENOMEM;
+		}
+		snprintf(sval, l, "_ucm%04X.%s", uc_mgr->ucm_card_number, *value);
+		free(*value);
+		*value = sval;
+		break;
+	}
+	return 0;
 }
 
 /**
@@ -340,6 +677,7 @@ static int execute_sequence(snd_use_case_mgr_t *uc_mgr,
 	char *cdev = NULL;
 	snd_ctl_t *ctl = NULL;
 	struct ctl_list *ctl_list;
+	bool ignore_error;
 	int err = 0;
 
 	list_for_each(pos, seq) {
@@ -349,10 +687,14 @@ static int execute_sequence(snd_use_case_mgr_t *uc_mgr,
 			cdev = strdup(s->data.cdev);
 			if (cdev == NULL)
 				goto __fail_nomem;
+			if (rewrite_device_value(uc_mgr, "PlaybackCTL", &cdev))
+				goto __fail_nomem;
 			break;
 		case SEQUENCE_ELEMENT_TYPE_CSET:
 		case SEQUENCE_ELEMENT_TYPE_CSET_BIN_FILE:
 		case SEQUENCE_ELEMENT_TYPE_CSET_TLV:
+		case SEQUENCE_ELEMENT_TYPE_CSET_NEW:
+		case SEQUENCE_ELEMENT_TYPE_CTL_REMOVE:
 			if (cdev == NULL && uc_mgr->in_component_domain) {
 				/* For sequence of a component device, use
 				 * its parent's cdev stored by ucm manager.
@@ -420,13 +762,44 @@ static int execute_sequence(snd_use_case_mgr_t *uc_mgr,
 				goto __fail;
 			}
 			break;
+		case SEQUENCE_ELEMENT_TYPE_SYSSET:
+			err = execute_sysw(s->data.sysw);
+			if (err < 0)
+				goto __fail;
+			break;
 		case SEQUENCE_ELEMENT_TYPE_SLEEP:
 			usleep(s->data.sleep);
 			break;
 		case SEQUENCE_ELEMENT_TYPE_EXEC:
-			err = system(s->data.exec);
-			if (err < 0)
+			if (s->data.exec == NULL)
+				break;
+			ignore_error = s->data.exec[0] == '-';
+			err = uc_mgr_exec(s->data.exec + (ignore_error ? 1 : 0));
+			if (ignore_error == false && err != 0) {
+				uc_error("exec '%s' failed (exit code %d)", s->data.exec, err);
 				goto __fail;
+			}
+			break;
+		case SEQUENCE_ELEMENT_TYPE_SHELL:
+			if (s->data.exec == NULL)
+				break;
+			ignore_error = s->data.exec[0] == '-';
+shell_retry:
+			err = system(s->data.exec + (ignore_error ? 1 : 0));
+			if (WIFSIGNALED(err)) {
+				err = -EINTR;
+			} if (WIFEXITED(err)) {
+				if (ignore_error == false && WEXITSTATUS(err) != 0) {
+					uc_error("command '%s' failed (exit code %d)", s->data.exec, WEXITSTATUS(err));
+					err = -EINVAL;
+					goto __fail;
+				}
+			} else if (err < 0) {
+				if (errno == EAGAIN)
+					goto shell_retry;
+				err = -errno;
+				goto __fail;
+			}
 			break;
 		case SEQUENCE_ELEMENT_TYPE_CMPT_SEQ:
 			/* Execute enable or disable sequence of a component
@@ -438,6 +811,11 @@ static int execute_sequence(snd_use_case_mgr_t *uc_mgr,
 						    value_list2,
 						    value_list3,
 						    cdev);
+			if (err < 0)
+				goto __fail;
+			break;
+		case SEQUENCE_ELEMENT_TYPE_CFGSAVE:
+			err = execute_cfgsave(uc_mgr, s->data.cfgsave);
 			if (err < 0)
 				goto __fail;
 			break;
@@ -594,6 +972,8 @@ static int check_empty_configuration(snd_use_case_mgr_t *uc_mgr)
 	}
 	if (!list_empty(&uc_mgr->verb_list))
 		return 0;
+	if (!list_empty(&uc_mgr->fixedboot_list))
+		return 0;
 	if (!list_empty(&uc_mgr->boot_list))
 		return 0;
 	return -ENXIO;
@@ -637,42 +1017,42 @@ static void *find0(struct list_head *list,
  * \return count of items on success, otherwise a negative error code
  */
 static int get_list0(struct list_head *list,
-                     const char **result[],
-                     unsigned long offset,
-                     unsigned long s1offset)
+		     const char **result[],
+		     unsigned long offset,
+		     unsigned long s1offset)
 {
-        char **res;
-        int cnt;
+	char **res;
+	int cnt;
 	struct list_head *pos;
 	char *ptr, *str1;
 
 	cnt = alloc_str_list(list, 1, &res);
 	if (cnt <= 0) {
 		*result = NULL;
-	        return cnt;
+		return cnt;
 	}
 	*result = (const char **)res;
 	list_for_each(pos, list) {
 		ptr = list_entry_offset(pos, char, offset);
 		str1 = *((char **)(ptr + s1offset));
 		if (str1 != NULL) {
-		        *res = strdup(str1);
-		        if (*res == NULL)
-		                goto __fail;
-                } else {
-                        *res = NULL;
-                }
-                res++;
+			*res = strdup(str1);
+			if (*res == NULL)
+				goto __fail;
+		} else {
+			*res = NULL;
+		}
+		res++;
 	}
 	return cnt;
       __fail:
-        snd_use_case_free_list((const char **)res, cnt);
-        return -ENOMEM;
+	snd_use_case_free_list(*result, cnt);
+	return -ENOMEM;
 }
 
 #define get_list(list, result, type, member, s1) \
 	get_list0(list, result, \
-	            (unsigned long)(&((type *)0)->member), \
+		    (unsigned long)(&((type *)0)->member), \
 		    (unsigned long)(&((type *)0)->s1))
 
 /**
@@ -685,52 +1065,52 @@ static int get_list0(struct list_head *list,
  * \return count of items on success, otherwise a negative error code
  */
 static int get_list20(struct list_head *list,
-                      const char **result[],
-                      unsigned long offset,
-                      unsigned long s1offset,
-                      unsigned long s2offset)
+		      const char **result[],
+		      unsigned long offset,
+		      unsigned long s1offset,
+		      unsigned long s2offset)
 {
-        char **res;
-        int cnt;
+	char **res;
+	int cnt;
 	struct list_head *pos;
 	char *ptr, *str1, *str2;
 
 	cnt = alloc_str_list(list, 2, &res);
 	if (cnt <= 0) {
 		*result = NULL;
-	        return cnt;
+		return cnt;
 	}
-        *result = (const char **)res;
+	*result = (const char **)res;
 	list_for_each(pos, list) {
 		ptr = list_entry_offset(pos, char, offset);
 		str1 = *((char **)(ptr + s1offset));
 		if (str1 != NULL) {
-		        *res = strdup(str1);
-		        if (*res == NULL)
-		                goto __fail;
-                } else {
-                        *res = NULL;
-                }
-                res++;
+			*res = strdup(str1);
+			if (*res == NULL)
+				goto __fail;
+		} else {
+			*res = NULL;
+		}
+		res++;
 		str2 = *((char **)(ptr + s2offset));
 		if (str2 != NULL) {
-		        *res = strdup(str2);
-		        if (*res == NULL)
-		                goto __fail;
-                } else {
-                        *res = NULL;
-                }
-                res++;
+			*res = strdup(str2);
+			if (*res == NULL)
+				goto __fail;
+		} else {
+			*res = NULL;
+		}
+		res++;
 	}
 	return cnt;
       __fail:
-        snd_use_case_free_list((const char **)res, cnt);
-        return -ENOMEM;
+	snd_use_case_free_list(*result, cnt);
+	return -ENOMEM;
 }
 
 #define get_list2(list, result, type, member, s1, s2) \
 	get_list20(list, result, \
-	            (unsigned long)(&((type *)0)->member), \
+		    (unsigned long)(&((type *)0)->member), \
 		    (unsigned long)(&((type *)0)->s1), \
 		    (unsigned long)(&((type *)0)->s2))
 
@@ -800,7 +1180,7 @@ static inline int is_device_supported(snd_use_case_mgr_t *uc_mgr,
  * \return structure on success, otherwise a NULL (not found)
  */
 static inline struct use_case_device *
-        find_device(snd_use_case_mgr_t *uc_mgr, struct use_case_verb *verb,
+	find_device(snd_use_case_mgr_t *uc_mgr, struct use_case_verb *verb,
 		    const char *device_name, int check_supported)
 {
 	struct use_case_device *device;
@@ -828,7 +1208,7 @@ static inline struct use_case_device *
  * \return structure on success, otherwise a NULL (not found)
  */
 static struct use_case_modifier *
-        find_modifier(snd_use_case_mgr_t *uc_mgr, struct use_case_verb *verb,
+	find_modifier(snd_use_case_mgr_t *uc_mgr, struct use_case_verb *verb,
 		      const char *modifier_name, int check_supported)
 {
 	struct use_case_modifier *modifier;
@@ -850,31 +1230,31 @@ static struct use_case_modifier *
 }
 
 long device_status(snd_use_case_mgr_t *uc_mgr,
-                   const char *device_name)
+		   const char *device_name)
 {
-        struct use_case_device *dev;
-        struct list_head *pos;
+	struct use_case_device *dev;
+	struct list_head *pos;
 
-        list_for_each(pos, &uc_mgr->active_devices) {
-                dev = list_entry(pos, struct use_case_device, active_list);
-                if (strcmp(dev->name, device_name) == 0)
-                        return 1;
-        }
-        return 0;
+	list_for_each(pos, &uc_mgr->active_devices) {
+		dev = list_entry(pos, struct use_case_device, active_list);
+		if (strcmp(dev->name, device_name) == 0)
+			return 1;
+	}
+	return 0;
 }
 
 long modifier_status(snd_use_case_mgr_t *uc_mgr,
-                     const char *modifier_name)
+		     const char *modifier_name)
 {
-        struct use_case_modifier *mod;
-        struct list_head *pos;
+	struct use_case_modifier *mod;
+	struct list_head *pos;
 
-        list_for_each(pos, &uc_mgr->active_modifiers) {
-                mod = list_entry(pos, struct use_case_modifier, active_list);
-                if (strcmp(mod->name, modifier_name) == 0)
-                        return 1;
-        }
-        return 0;
+	list_for_each(pos, &uc_mgr->active_modifiers) {
+		mod = list_entry(pos, struct use_case_modifier, active_list);
+		if (strcmp(mod->name, modifier_name) == 0)
+			return 1;
+	}
+	return 0;
 }
 
 /**
@@ -956,7 +1336,7 @@ static int set_device(snd_use_case_mgr_t *uc_mgr,
 	struct list_head *seq;
 	int err;
 
-        if (device_status(uc_mgr, device->name) == enable)
+	if (device_status(uc_mgr, device->name) == enable)
 		return 0;
 
 	if (enable) {
@@ -993,6 +1373,7 @@ int snd_use_case_mgr_open(snd_use_case_mgr_t **uc_mgr,
 	if (mgr == NULL)
 		return -ENOMEM;
 	INIT_LIST_HEAD(&mgr->verb_list);
+	INIT_LIST_HEAD(&mgr->fixedboot_list);
 	INIT_LIST_HEAD(&mgr->boot_list);
 	INIT_LIST_HEAD(&mgr->default_list);
 	INIT_LIST_HEAD(&mgr->value_list);
@@ -1002,10 +1383,20 @@ int snd_use_case_mgr_open(snd_use_case_mgr_t **uc_mgr,
 	INIT_LIST_HEAD(&mgr->variable_list);
 	pthread_mutex_init(&mgr->mutex, NULL);
 
+	err = uc_mgr_card_open(mgr);
+	if (err < 0) {
+		uc_mgr_free(mgr);
+		return err;
+	}
+
+	err = snd_config_top(&mgr->local_config);
+	if (err < 0)
+		goto _err;
+
 	mgr->card_name = strdup(card_name);
 	if (mgr->card_name == NULL) {
-		free(mgr);
-		return -ENOMEM;
+		err = -ENOMEM;
+		goto _err;
 	}
 
 	/* get info on use_cases and verify against card */
@@ -1026,6 +1417,7 @@ int snd_use_case_mgr_open(snd_use_case_mgr_t **uc_mgr,
 	return 0;
 
 _err:
+	uc_mgr_card_close(mgr);
 	uc_mgr_free(mgr);
 	return err;
 }
@@ -1064,6 +1456,7 @@ int snd_use_case_mgr_reload(snd_use_case_mgr_t *uc_mgr)
  */
 int snd_use_case_mgr_close(snd_use_case_mgr_t *uc_mgr)
 {
+	uc_mgr_card_close(uc_mgr);
 	uc_mgr_free(uc_mgr);
 
 	return 0;
@@ -1117,7 +1510,7 @@ static int dismantle_use_case(snd_use_case_mgr_t *uc_mgr)
  */
 int snd_use_case_mgr_reset(snd_use_case_mgr_t *uc_mgr)
 {
-        int err;
+	int err;
 
 	pthread_mutex_lock(&uc_mgr->mutex);
 	err = execute_sequence(uc_mgr, &uc_mgr->default_list,
@@ -1136,9 +1529,9 @@ int snd_use_case_mgr_reset(snd_use_case_mgr_t *uc_mgr)
  */
 static int get_verb_list(snd_use_case_mgr_t *uc_mgr, const char **list[])
 {
-        return get_list2(&uc_mgr->verb_list, list,
-                         struct use_case_verb, list,
-                         name, comment);
+	return get_list2(&uc_mgr->verb_list, list,
+			 struct use_case_verb, list,
+			 name, comment);
 }
 
 /**
@@ -1148,20 +1541,20 @@ static int get_verb_list(snd_use_case_mgr_t *uc_mgr, const char **list[])
  * \return Number of list entries if success, otherwise a negative error code
  */
 static int get_device_list(snd_use_case_mgr_t *uc_mgr, const char **list[],
-                           char *verbname)
+			   char *verbname)
 {
-        struct use_case_verb *verb;
-        
-        if (verbname) {
-                verb = find_verb(uc_mgr, verbname);
-        } else {
-                verb = uc_mgr->active_verb;
-        }
-        if (verb == NULL)
-                return -ENOENT;
-        return get_list2(&verb->device_list, list,
-                         struct use_case_device, list,
-                         name, comment);
+	struct use_case_verb *verb;
+
+	if (verbname) {
+		verb = find_verb(uc_mgr, verbname);
+	} else {
+		verb = uc_mgr->active_verb;
+	}
+	if (verb == NULL)
+		return -ENOENT;
+	return get_list2(&verb->device_list, list,
+			 struct use_case_device, list,
+			 name, comment);
 }
 
 /**
@@ -1171,20 +1564,19 @@ static int get_device_list(snd_use_case_mgr_t *uc_mgr, const char **list[],
  * \return Number of list entries if success, otherwise a negative error code
  */
 static int get_modifier_list(snd_use_case_mgr_t *uc_mgr, const char **list[],
-                             char *verbname)
+			     char *verbname)
 {
-        struct use_case_verb *verb;
-        
-        if (verbname) {
-                verb = find_verb(uc_mgr, verbname);
-        } else {
-                verb = uc_mgr->active_verb;
-        }
-        if (verb == NULL)
-                return -ENOENT;
-        return get_list2(&verb->modifier_list, list,
-                         struct use_case_modifier, list,
-                         name, comment);
+	struct use_case_verb *verb;
+	if (verbname) {
+		verb = find_verb(uc_mgr, verbname);
+	} else {
+		verb = uc_mgr->active_verb;
+	}
+	if (verb == NULL)
+		return -ENOENT;
+	return get_list2(&verb->modifier_list, list,
+			 struct use_case_modifier, list,
+			 name, comment);
 }
 
 /**
@@ -1371,13 +1763,13 @@ static int add_identifiers(struct list_head *list,
  * \param source Source list with ucm_value structures
  */
 static int add_values(struct list_head *list,
-                      const char *identifier,
-                      struct list_head *source)
+		      const char *identifier,
+		      struct list_head *source)
 {
 	struct ucm_value *v;
 	struct list_head *pos;
 	int err;
-        
+
 	list_for_each(pos, source) {
 		v = list_entry(pos, struct ucm_value, list);
 		if (check_identifier(identifier, v->name)) {
@@ -1472,51 +1864,51 @@ __fail:
  * \return Number of list entries if success, otherwise a negative error code
  */
 static int get_value_list(snd_use_case_mgr_t *uc_mgr,
-                          const char *identifier,
-                          const char **list[],
-                          char *verbname)
+			  const char *identifier,
+			  const char **list[],
+			  char *verbname)
 {
 	struct list_head mylist, *pos;
-        struct use_case_verb *verb;
-        struct use_case_device *dev;
-        struct use_case_modifier *mod;
-        char **res;
-        int err;
-        
-        if (verbname) {
-                verb = find_verb(uc_mgr, verbname);
-        } else {
-                verb = uc_mgr->active_verb;
-        }
-        if (verb == NULL)
-                return -ENOENT;
-        INIT_LIST_HEAD(&mylist);
+	struct use_case_verb *verb;
+	struct use_case_device *dev;
+	struct use_case_modifier *mod;
+	char **res;
+	int err;
+
+	if (verbname) {
+		verb = find_verb(uc_mgr, verbname);
+	} else {
+		verb = uc_mgr->active_verb;
+	}
+	if (verb == NULL)
+		return -ENOENT;
+	INIT_LIST_HEAD(&mylist);
 	err = add_values(&mylist, identifier, &uc_mgr->value_list);
 	if (err < 0)
 		goto __fail;
-        err = add_values(&mylist, identifier, &verb->value_list);
-        if (err < 0)
-                goto __fail;
-        list_for_each(pos, &verb->device_list) {
-                dev = list_entry(pos, struct use_case_device, list);
-                err = add_values(&mylist, identifier, &dev->value_list);
-                if (err < 0)
-                        goto __fail;
-        }
-        list_for_each(pos, &verb->modifier_list) {
-                mod = list_entry(pos, struct use_case_modifier, list);
-                err = add_values(&mylist, identifier, &mod->value_list);
-                if (err < 0)
-                        goto __fail;
-        }
+	err = add_values(&mylist, identifier, &verb->value_list);
+	if (err < 0)
+		goto __fail;
+	list_for_each(pos, &verb->device_list) {
+		dev = list_entry(pos, struct use_case_device, list);
+		err = add_values(&mylist, identifier, &dev->value_list);
+		if (err < 0)
+			goto __fail;
+	}
+	list_for_each(pos, &verb->modifier_list) {
+		mod = list_entry(pos, struct use_case_modifier, list);
+		err = add_values(&mylist, identifier, &mod->value_list);
+		if (err < 0)
+			goto __fail;
+	}
 	err = myvalue_to_str_list(&mylist, &res);
 	if (err > 0)
-	        *list = (const char **)res;
+		*list = (const char **)res;
 	else if (err == 0)
 		*list = NULL;
       __fail:
 	myvalue_list_free(&mylist);
-        return err;
+	return err;
 }
 
 /**
@@ -1526,13 +1918,13 @@ static int get_value_list(snd_use_case_mgr_t *uc_mgr,
  * \return Number of list entries if success, otherwise a negative error code
  */
 static int get_enabled_device_list(snd_use_case_mgr_t *uc_mgr,
-                                   const char **list[])
+				   const char **list[])
 {
-        if (uc_mgr->active_verb == NULL)
-                return -EINVAL;
-        return get_list(&uc_mgr->active_devices, list,
-                        struct use_case_device, active_list,
-                        name);
+	if (uc_mgr->active_verb == NULL)
+		return -EINVAL;
+	return get_list(&uc_mgr->active_devices, list,
+			struct use_case_device, active_list,
+			name);
 }
 
 /**
@@ -1542,13 +1934,13 @@ static int get_enabled_device_list(snd_use_case_mgr_t *uc_mgr,
  * \return Number of list entries if success, otherwise a negative error code
  */
 static int get_enabled_modifier_list(snd_use_case_mgr_t *uc_mgr,
-                                     const char **list[])
+				     const char **list[])
 {
-        if (uc_mgr->active_verb == NULL)
-                return -EINVAL;
-        return get_list(&uc_mgr->active_modifiers, list,
-                        struct use_case_modifier, active_list,
-                        name);
+	if (uc_mgr->active_verb == NULL)
+		return -EINVAL;
+	return get_list(&uc_mgr->active_modifiers, list,
+			struct use_case_modifier, active_list,
+			name);
 }
 
 /**
@@ -1570,24 +1962,24 @@ int snd_use_case_get_list(snd_use_case_mgr_t *uc_mgr,
 	pthread_mutex_lock(&uc_mgr->mutex);
 	if (strcmp(identifier, "_verbs") == 0)
 		err = get_verb_list(uc_mgr, list);
-        else if (strcmp(identifier, "_enadevs") == 0)
-        	err = get_enabled_device_list(uc_mgr, list);
-        else if (strcmp(identifier, "_enamods") == 0)
-                err = get_enabled_modifier_list(uc_mgr, list);
-        else {
-                str1 = strchr(identifier, '/');
-                if (str1) {
-                        str = strdup(str1 + 1);
-                	if (str == NULL) {
-                  		err = -ENOMEM;
-                		goto __end;
-                        }
-                } else {
-                        str = NULL;
-                }
+	else if (strcmp(identifier, "_enadevs") == 0)
+		err = get_enabled_device_list(uc_mgr, list);
+	else if (strcmp(identifier, "_enamods") == 0)
+		err = get_enabled_modifier_list(uc_mgr, list);
+	else {
+		str1 = strchr(identifier, '/');
+		if (str1) {
+			str = strdup(str1 + 1);
+			if (str == NULL) {
+				err = -ENOMEM;
+				goto __end;
+			}
+		} else {
+			str = NULL;
+		}
 		if (check_identifier(identifier, "_devices"))
 			err = get_device_list(uc_mgr, list, str);
-                else if (check_identifier(identifier, "_modifiers"))
+		else if (check_identifier(identifier, "_modifiers"))
 			err = get_modifier_list(uc_mgr, list, str);
 		else if (check_identifier(identifier, "_identifiers"))
 			err = get_identifiers_list(uc_mgr, list, str);
@@ -1610,13 +2002,14 @@ int snd_use_case_get_list(snd_use_case_mgr_t *uc_mgr,
 static int get_value1(snd_use_case_mgr_t *uc_mgr, char **value,
 		      struct list_head *value_list, const char *identifier)
 {
-        struct ucm_value *val;
-        struct list_head *pos;
-        
+	struct ucm_value *val;
+	struct list_head *pos;
+	int err;
+
 	if (!value_list)
 		return -ENOENT;
 
-        list_for_each(pos, value_list) {
+	list_for_each(pos, value_list) {
 		val = list_entry(pos, struct ucm_value, list);
 		if (check_identifier(identifier, val->name)) {
 			if (uc_mgr->conf_format < 2) {
@@ -1625,10 +2018,13 @@ static int get_value1(snd_use_case_mgr_t *uc_mgr, char **value,
 					return -ENOMEM;
 				return 0;
 			}
-			return uc_mgr_get_substituted_value(uc_mgr, value, val->data);
+			err = uc_mgr_get_substituted_value(uc_mgr, value, val->data);
+			if (err < 0)
+				return err;
+			return rewrite_device_value(uc_mgr, val->name, value);
 		}
-        }
-        return -ENOENT;
+	}
+	return -ENOENT;
 }
 
 static int get_value3(snd_use_case_mgr_t *uc_mgr,
@@ -1721,6 +2117,50 @@ static int get_value(snd_use_case_mgr_t *uc_mgr,
 }
 
 /**
+ * \brief Get private alsa-lib configuration (ASCII)
+ * \param uc_mgr Use case manager
+ * \param str Returned value string
+ * \return Zero on success (value is filled), otherwise a negative error code
+ */
+static int get_alibcfg(snd_use_case_mgr_t *uc_mgr, char **str)
+{
+	snd_output_t *out;
+	size_t size;
+	int err;
+
+	err = snd_output_buffer_open(&out);
+	if (err < 0)
+		return err;
+	err = snd_config_save(uc_mgr->local_config, out);
+	if (err >= 0) {
+		size = snd_output_buffer_steal(out, str);
+		if (*str)
+			(*str)[size] = '\0';
+	}
+	snd_output_close(out);
+	return 0;
+}
+
+/**
+ * \brief Get device prefix for private alsa-lib configuration
+ * \param uc_mgr Use case manager
+ * \param str Returned value string
+ * \return Zero on success (value is filled), otherwise a negative error code
+ */
+static int get_alibpref(snd_use_case_mgr_t *uc_mgr, char **str)
+{
+	const size_t l = 10;
+	char *s;
+
+	s = malloc(l);
+	if (s == NULL)
+		return -ENOMEM;
+	snprintf(s, l, "_ucm%04X.", uc_mgr->ucm_card_number);
+	*str = s;
+	return 0;
+}
+
+/**
  * \brief Get current - string
  * \param uc_mgr Use case manager
  * \param identifier 
@@ -1737,27 +2177,27 @@ int snd_use_case_get(snd_use_case_mgr_t *uc_mgr,
 	const char *slash1, *slash2, *mod_dev_after;
 	const char *ident, *mod_dev, *verb;
 	int exact = 0;
-        int err;
+	int err;
 
 	pthread_mutex_lock(&uc_mgr->mutex);
 	if (identifier == NULL) {
-	        *value = strdup(uc_mgr->card_name);
-	        if (*value == NULL) {
-	                err = -ENOMEM;
-	                goto __end;
-                }
-                err = 0;
-        } else if (strcmp(identifier, "_verb") == 0) {
-                if (uc_mgr->active_verb == NULL) {
-                        err = -ENOENT;
+		*value = strdup(uc_mgr->card_name);
+		if (*value == NULL) {
+			err = -ENOMEM;
 			goto __end;
 		}
-                *value = strdup(uc_mgr->active_verb->name);
-                if (*value == NULL) {
-                        err = -ENOMEM;
-                        goto __end;
-                }
-	        err = 0;
+		err = 0;
+	} else if (strcmp(identifier, "_verb") == 0) {
+		if (uc_mgr->active_verb == NULL) {
+			err = -ENOENT;
+			goto __end;
+		}
+		*value = strdup(uc_mgr->active_verb->name);
+		if (*value == NULL) {
+			err = -ENOMEM;
+			goto __end;
+		}
+		err = 0;
 	} else if (strcmp(identifier, "_file") == 0) {
 		/* get the conf file name of the opened card */
 		if ((uc_mgr->card_name == NULL) ||
@@ -1773,10 +2213,13 @@ int snd_use_case_get(snd_use_case_mgr_t *uc_mgr,
 		}
 		err = 0;
 
+	} else if (strcmp(identifier, "_alibcfg") == 0) {
+		err = get_alibcfg(uc_mgr, (char **)value);
+	} else if (strcmp(identifier, "_alibpref") == 0) {
+		err = get_alibpref(uc_mgr, (char **)value);
 	} else if (identifier[0] == '_') {
 		err = -ENOENT;
-		goto __end;
-        } else {
+	} else {
 		if (identifier[0] == '=') {
 			exact = 1;
 			identifier++;
@@ -1809,15 +2252,15 @@ int snd_use_case_get(snd_use_case_mgr_t *uc_mgr,
 		}
 
 		err = get_value(uc_mgr, ident, (char **)value, mod_dev, verb,
-		                exact);
+				exact);
 		if (ident != identifier)
 			free((void *)ident);
 		if (mod_dev)
 			free((void *)mod_dev);
-        }
+	}
       __end:
 	pthread_mutex_unlock(&uc_mgr->mutex);
-        return err;
+	return err;
 }
 
 
@@ -1831,29 +2274,29 @@ int snd_use_case_geti(snd_use_case_mgr_t *uc_mgr,
 		      const char *identifier,
 		      long *value)
 {
-        char *str, *str1;
-        long err;
+	char *str, *str1;
+	long err;
 
 	pthread_mutex_lock(&uc_mgr->mutex);
-        if (0) {
-                /* nothing here - prepared for fixed identifiers */
-        } else {
-                str1 = strchr(identifier, '/');
-                if (str1) {
-                        str = strdup(str1 + 1);
-                	if (str == NULL) {
-                  		err = -ENOMEM;
-                		goto __end;
-                        }
-                } else {
-                        str = NULL;
-                }
-                if (check_identifier(identifier, "_devstatus")) {
+	if (0) {
+		/* nothing here - prepared for fixed identifiers */
+	} else {
+		str1 = strchr(identifier, '/');
+		if (str1) {
+			str = strdup(str1 + 1);
+			if (str == NULL) {
+				err = -ENOMEM;
+				goto __end;
+			}
+		} else {
+			str = NULL;
+		}
+		if (check_identifier(identifier, "_devstatus")) {
 			if (!str) {
 				err = -EINVAL;
 				goto __end;
 			}
-                        err = device_status(uc_mgr, str);
+			err = device_status(uc_mgr, str);
 			if (err >= 0) {
 				*value = err;
 				err = 0;
@@ -1863,7 +2306,7 @@ int snd_use_case_geti(snd_use_case_mgr_t *uc_mgr,
 				err = -EINVAL;
 				goto __end;
 			}
-                        err = modifier_status(uc_mgr, str);
+			err = modifier_status(uc_mgr, str);
 			if (err >= 0) {
 				*value = err;
 				err = 0;
@@ -1877,13 +2320,33 @@ int snd_use_case_geti(snd_use_case_mgr_t *uc_mgr,
 			err = -ENOENT;
 #endif
 		} else
-                        err = -ENOENT;
-                if (str)
-                        free(str);
-        }
+			err = -ENOENT;
+		if (str)
+			free(str);
+	}
       __end:
 	pthread_mutex_unlock(&uc_mgr->mutex);
-        return err;
+	return err;
+}
+
+static int set_fixedboot_user(snd_use_case_mgr_t *uc_mgr,
+			      const char *value)
+{
+	int err;
+
+	if (value != NULL && *value) {
+		uc_error("error: wrong value for _fboot (%s)", value);
+		return -EINVAL;
+	}
+	if (list_empty(&uc_mgr->fixedboot_list))
+		return -ENOENT;
+	err = execute_sequence(uc_mgr, &uc_mgr->fixedboot_list,
+			       &uc_mgr->value_list, NULL, NULL);
+	if (err < 0) {
+		uc_error("Unable to execute force boot sequence");
+		return err;
+	}
+	return err;
 }
 
 static int set_boot_user(snd_use_case_mgr_t *uc_mgr,
@@ -1895,6 +2358,8 @@ static int set_boot_user(snd_use_case_mgr_t *uc_mgr,
 		uc_error("error: wrong value for _boot (%s)", value);
 		return -EINVAL;
 	}
+	if (list_empty(&uc_mgr->boot_list))
+		return -ENOENT;
 	err = execute_sequence(uc_mgr, &uc_mgr->boot_list,
 			       &uc_mgr->value_list, NULL, NULL);
 	if (err < 0) {
@@ -1915,199 +2380,199 @@ static int set_defaults_user(snd_use_case_mgr_t *uc_mgr,
 }
 
 static int handle_transition_verb(snd_use_case_mgr_t *uc_mgr,
-                                  struct use_case_verb *new_verb)
+				  struct use_case_verb *new_verb)
 {
-        struct list_head *pos;
-        struct transition_sequence *trans;
-        int err;
+	struct list_head *pos;
+	struct transition_sequence *trans;
+	int err;
 
-        list_for_each(pos, &uc_mgr->active_verb->transition_list) {
-                trans = list_entry(pos, struct transition_sequence, list);
-                if (strcmp(trans->name, new_verb->name) == 0) {
-                        err = execute_sequence(uc_mgr, &trans->transition_list,
+	list_for_each(pos, &uc_mgr->active_verb->transition_list) {
+		trans = list_entry(pos, struct transition_sequence, list);
+		if (strcmp(trans->name, new_verb->name) == 0) {
+			err = execute_sequence(uc_mgr, &trans->transition_list,
 					       &uc_mgr->active_verb->value_list,
 					       &uc_mgr->value_list,
 					       NULL);
-                        if (err >= 0)
-                                return 1;
-                        return err;
-                }
-        }
-        return 0;
+			if (err >= 0)
+				return 1;
+			return err;
+		}
+	}
+	return 0;
 }
 
 static int set_verb_user(snd_use_case_mgr_t *uc_mgr,
-                         const char *verb_name)
+			 const char *verb_name)
 {
-        struct use_case_verb *verb;
-        int err = 0;
+	struct use_case_verb *verb;
+	int err = 0;
 
-        if (uc_mgr->active_verb &&
-            strcmp(uc_mgr->active_verb->name, verb_name) == 0)
-                return 0;
-        if (strcmp(verb_name, SND_USE_CASE_VERB_INACTIVE) != 0) {
-                verb = find_verb(uc_mgr, verb_name);
-                if (verb == NULL)
-                        return -ENOENT;
-        } else {
-                verb = NULL;
-        }
-        if (uc_mgr->active_verb) {
-                err = handle_transition_verb(uc_mgr, verb);
-                if (err == 0) {
-                        err = dismantle_use_case(uc_mgr);
-                        if (err < 0)
-                                return err;
-                } else if (err == 1) {
-                        uc_mgr->active_verb = verb;
-                        verb = NULL;
-                } else {
-                        verb = NULL; /* show error */
-                }
-        }
-        if (verb) {
-                err = set_verb(uc_mgr, verb, 1);
-                if (err < 0)
-                        uc_error("error: failed to initialize new use case: %s",
-                                 verb_name);
-        }
-        return err;
+	if (uc_mgr->active_verb &&
+	    strcmp(uc_mgr->active_verb->name, verb_name) == 0)
+		return 0;
+	if (strcmp(verb_name, SND_USE_CASE_VERB_INACTIVE) != 0) {
+		verb = find_verb(uc_mgr, verb_name);
+		if (verb == NULL)
+			return -ENOENT;
+	} else {
+		verb = NULL;
+	}
+	if (uc_mgr->active_verb) {
+		err = handle_transition_verb(uc_mgr, verb);
+		if (err == 0) {
+			err = dismantle_use_case(uc_mgr);
+			if (err < 0)
+				return err;
+		} else if (err == 1) {
+			uc_mgr->active_verb = verb;
+			verb = NULL;
+		} else {
+			verb = NULL; /* show error */
+		}
+	}
+	if (verb) {
+		err = set_verb(uc_mgr, verb, 1);
+		if (err < 0)
+			uc_error("error: failed to initialize new use case: %s",
+				 verb_name);
+	}
+	return err;
 }
 
 
 static int set_device_user(snd_use_case_mgr_t *uc_mgr,
-                           const char *device_name,
-                           int enable)
+			   const char *device_name,
+			   int enable)
 {
-        struct use_case_device *device;
+	struct use_case_device *device;
 
-        if (uc_mgr->active_verb == NULL)
-                return -ENOENT;
-        device = find_device(uc_mgr, uc_mgr->active_verb, device_name, 1);
-        if (device == NULL)
-                return -ENOENT;
-        return set_device(uc_mgr, device, enable);
+	if (uc_mgr->active_verb == NULL)
+		return -ENOENT;
+	device = find_device(uc_mgr, uc_mgr->active_verb, device_name, 1);
+	if (device == NULL)
+		return -ENOENT;
+	return set_device(uc_mgr, device, enable);
 }
 
 static int set_modifier_user(snd_use_case_mgr_t *uc_mgr,
-                             const char *modifier_name,
-                             int enable)
+			     const char *modifier_name,
+			     int enable)
 {
-        struct use_case_modifier *modifier;
+	struct use_case_modifier *modifier;
 
-        if (uc_mgr->active_verb == NULL)
-                return -ENOENT;
+	if (uc_mgr->active_verb == NULL)
+		return -ENOENT;
 
-        modifier = find_modifier(uc_mgr, uc_mgr->active_verb, modifier_name, 1);
-        if (modifier == NULL)
-                return -ENOENT;
-        return set_modifier(uc_mgr, modifier, enable);
+	modifier = find_modifier(uc_mgr, uc_mgr->active_verb, modifier_name, 1);
+	if (modifier == NULL)
+		return -ENOENT;
+	return set_modifier(uc_mgr, modifier, enable);
 }
 
 static int switch_device(snd_use_case_mgr_t *uc_mgr,
-                         const char *old_device,
-                         const char *new_device)
+			 const char *old_device,
+			 const char *new_device)
 {
-        struct use_case_device *xold, *xnew;
-        struct transition_sequence *trans;
-        struct list_head *pos;
-        int err, seq_found = 0;
-        
-        if (uc_mgr->active_verb == NULL)
-                return -ENOENT;
-        if (device_status(uc_mgr, old_device) == 0) {
-                uc_error("error: device %s not enabled", old_device);
-                return -EINVAL;
-        }
-        if (device_status(uc_mgr, new_device) != 0) {
-                uc_error("error: device %s already enabled", new_device);
-                return -EINVAL;
-        }
-        xold = find_device(uc_mgr, uc_mgr->active_verb, old_device, 1);
-        if (xold == NULL)
-                return -ENOENT;
-        list_del(&xold->active_list);
-        xnew = find_device(uc_mgr, uc_mgr->active_verb, new_device, 1);
-        list_add_tail(&xold->active_list, &uc_mgr->active_devices);
-        if (xnew == NULL)
-                return -ENOENT;
-        err = 0;
-        list_for_each(pos, &xold->transition_list) {
-                trans = list_entry(pos, struct transition_sequence, list);
-                if (strcmp(trans->name, new_device) == 0) {
-                        err = execute_sequence(uc_mgr, &trans->transition_list,
+	struct use_case_device *xold, *xnew;
+	struct transition_sequence *trans;
+	struct list_head *pos;
+	int err, seq_found = 0;
+
+	if (uc_mgr->active_verb == NULL)
+		return -ENOENT;
+	if (device_status(uc_mgr, old_device) == 0) {
+		uc_error("error: device %s not enabled", old_device);
+		return -EINVAL;
+	}
+	if (device_status(uc_mgr, new_device) != 0) {
+		uc_error("error: device %s already enabled", new_device);
+		return -EINVAL;
+	}
+	xold = find_device(uc_mgr, uc_mgr->active_verb, old_device, 1);
+	if (xold == NULL)
+		return -ENOENT;
+	list_del(&xold->active_list);
+	xnew = find_device(uc_mgr, uc_mgr->active_verb, new_device, 1);
+	list_add_tail(&xold->active_list, &uc_mgr->active_devices);
+	if (xnew == NULL)
+		return -ENOENT;
+	err = 0;
+	list_for_each(pos, &xold->transition_list) {
+		trans = list_entry(pos, struct transition_sequence, list);
+		if (strcmp(trans->name, new_device) == 0) {
+			err = execute_sequence(uc_mgr, &trans->transition_list,
 					       &xold->value_list,
 					       &uc_mgr->active_verb->value_list,
 					       &uc_mgr->value_list);
-                        if (err >= 0) {
-                                list_del(&xold->active_list);
-                                list_add_tail(&xnew->active_list, &uc_mgr->active_devices);
-                        }
-                        seq_found = 1;
-                        break;
-                }
-        }
-        if (!seq_found) {
-                err = set_device(uc_mgr, xold, 0);
-                if (err < 0)
-                        return err;
-                err = set_device(uc_mgr, xnew, 1);
-                if (err < 0)
-                        return err;
-        }
-        return err;
+			if (err >= 0) {
+				list_del(&xold->active_list);
+				list_add_tail(&xnew->active_list, &uc_mgr->active_devices);
+			}
+			seq_found = 1;
+			break;
+		}
+	}
+	if (!seq_found) {
+		err = set_device(uc_mgr, xold, 0);
+		if (err < 0)
+			return err;
+		err = set_device(uc_mgr, xnew, 1);
+		if (err < 0)
+			return err;
+	}
+	return err;
 }
 
 static int switch_modifier(snd_use_case_mgr_t *uc_mgr,
-                           const char *old_modifier,
-                           const char *new_modifier)
+			   const char *old_modifier,
+			   const char *new_modifier)
 {
-        struct use_case_modifier *xold, *xnew;
-        struct transition_sequence *trans;
-        struct list_head *pos;
-        int err, seq_found = 0;
-        
-        if (uc_mgr->active_verb == NULL)
-                return -ENOENT;
-        if (modifier_status(uc_mgr, old_modifier) == 0) {
-                uc_error("error: modifier %s not enabled", old_modifier);
-                return -EINVAL;
-        }
-        if (modifier_status(uc_mgr, new_modifier) != 0) {
-                uc_error("error: modifier %s already enabled", new_modifier);
-                return -EINVAL;
-        }
-        xold = find_modifier(uc_mgr, uc_mgr->active_verb, old_modifier, 1);
-        if (xold == NULL)
-                return -ENOENT;
-        xnew = find_modifier(uc_mgr, uc_mgr->active_verb, new_modifier, 1);
-        if (xnew == NULL)
-                return -ENOENT;
-        err = 0;
-        list_for_each(pos, &xold->transition_list) {
-                trans = list_entry(pos, struct transition_sequence, list);
-                if (strcmp(trans->name, new_modifier) == 0) {
-                        err = execute_sequence(uc_mgr, &trans->transition_list,
+	struct use_case_modifier *xold, *xnew;
+	struct transition_sequence *trans;
+	struct list_head *pos;
+	int err, seq_found = 0;
+
+	if (uc_mgr->active_verb == NULL)
+		return -ENOENT;
+	if (modifier_status(uc_mgr, old_modifier) == 0) {
+		uc_error("error: modifier %s not enabled", old_modifier);
+		return -EINVAL;
+	}
+	if (modifier_status(uc_mgr, new_modifier) != 0) {
+		uc_error("error: modifier %s already enabled", new_modifier);
+		return -EINVAL;
+	}
+	xold = find_modifier(uc_mgr, uc_mgr->active_verb, old_modifier, 1);
+	if (xold == NULL)
+		return -ENOENT;
+	xnew = find_modifier(uc_mgr, uc_mgr->active_verb, new_modifier, 1);
+	if (xnew == NULL)
+		return -ENOENT;
+	err = 0;
+	list_for_each(pos, &xold->transition_list) {
+		trans = list_entry(pos, struct transition_sequence, list);
+		if (strcmp(trans->name, new_modifier) == 0) {
+			err = execute_sequence(uc_mgr, &trans->transition_list,
 					       &xold->value_list,
 					       &uc_mgr->active_verb->value_list,
 					       &uc_mgr->value_list);
-                        if (err >= 0) {
-                                list_del(&xold->active_list);
-                                list_add_tail(&xnew->active_list, &uc_mgr->active_modifiers);
-                        }
-                        seq_found = 1;
-                        break;
-                }
-        }
-        if (!seq_found) {
-                err = set_modifier(uc_mgr, xold, 0);
-                if (err < 0)
-                        return err;
-                err = set_modifier(uc_mgr, xnew, 1);
-                if (err < 0)
-                        return err;
-        }
-        return err;        
+			if (err >= 0) {
+				list_del(&xold->active_list);
+				list_add_tail(&xnew->active_list, &uc_mgr->active_modifiers);
+			}
+			seq_found = 1;
+			break;
+		}
+	}
+	if (!seq_found) {
+		err = set_modifier(uc_mgr, xold, 0);
+		if (err < 0)
+			return err;
+		err = set_modifier(uc_mgr, xnew, 1);
+		if (err < 0)
+			return err;
+	}
+	return err;
 }
 
 /**
@@ -2118,51 +2583,53 @@ static int switch_modifier(snd_use_case_mgr_t *uc_mgr,
  * \return Zero if success, otherwise a negative error code
  */
 int snd_use_case_set(snd_use_case_mgr_t *uc_mgr,
-                     const char *identifier,
-                     const char *value)
+		     const char *identifier,
+		     const char *value)
 {
 	char *str, *str1;
 	int err = 0;
 
 	pthread_mutex_lock(&uc_mgr->mutex);
-	if (strcmp(identifier, "_boot") == 0)
+	if (strcmp(identifier, "_fboot") == 0)
+		err = set_fixedboot_user(uc_mgr, value);
+	else if (strcmp(identifier, "_boot") == 0)
 		err = set_boot_user(uc_mgr, value);
 	else if (strcmp(identifier, "_defaults") == 0)
 		err = set_defaults_user(uc_mgr, value);
 	else if (strcmp(identifier, "_verb") == 0)
-	        err = set_verb_user(uc_mgr, value);
-        else if (strcmp(identifier, "_enadev") == 0)
-                err = set_device_user(uc_mgr, value, 1);
-        else if (strcmp(identifier, "_disdev") == 0)
-                err = set_device_user(uc_mgr, value, 0);
-        else if (strcmp(identifier, "_enamod") == 0)
-                err = set_modifier_user(uc_mgr, value, 1);
-        else if (strcmp(identifier, "_dismod") == 0)
-                err = set_modifier_user(uc_mgr, value, 0);
-        else {
-                str1 = strchr(identifier, '/');
-                if (str1) {
-                        str = strdup(str1 + 1);
-                	if (str == NULL) {
-                  		err = -ENOMEM;
-                		goto __end;
-                        }
-                } else {
-                        err = -EINVAL;
-                        goto __end;
-                }
-                if (check_identifier(identifier, "_swdev"))
-                        err = switch_device(uc_mgr, str, value);
-                else if (check_identifier(identifier, "_swmod"))
-                        err = switch_modifier(uc_mgr, str, value);
-                else
-                        err = -EINVAL;
-                if (str)
-                        free(str);
-        }
+		err = set_verb_user(uc_mgr, value);
+	else if (strcmp(identifier, "_enadev") == 0)
+		err = set_device_user(uc_mgr, value, 1);
+	else if (strcmp(identifier, "_disdev") == 0)
+		err = set_device_user(uc_mgr, value, 0);
+	else if (strcmp(identifier, "_enamod") == 0)
+		err = set_modifier_user(uc_mgr, value, 1);
+	else if (strcmp(identifier, "_dismod") == 0)
+		err = set_modifier_user(uc_mgr, value, 0);
+	else {
+		str1 = strchr(identifier, '/');
+		if (str1) {
+			str = strdup(str1 + 1);
+			if (str == NULL) {
+				err = -ENOMEM;
+				goto __end;
+			}
+		} else {
+			err = -EINVAL;
+			goto __end;
+		}
+		if (check_identifier(identifier, "_swdev"))
+			err = switch_device(uc_mgr, str, value);
+		else if (check_identifier(identifier, "_swmod"))
+			err = switch_modifier(uc_mgr, str, value);
+		else
+			err = -EINVAL;
+		if (str)
+			free(str);
+	}
       __end:
 	pthread_mutex_unlock(&uc_mgr->mutex);
-        return err;
+	return err;
 }
 
 /**

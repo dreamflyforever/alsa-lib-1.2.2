@@ -78,6 +78,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
+#include <limits.h>
 #include "local.h"
 
 /**
@@ -140,6 +141,35 @@ int snd_config_get_bool(const snd_config_t *conf)
 	if (err < 0)
 		goto _invalid_value;
 	return err;
+}
+
+/**
+ * \brief Gets the card number from a configuration node.
+ * \param conf Handle to the configuration node to be parsed.
+ * \return The card number if successful, otherwise a negative error code.
+ */
+int snd_config_get_card(const snd_config_t *conf)
+{
+	const char *str, *id;
+	long v;
+	int err;
+
+	if (snd_config_get_integer(conf, &v) < 0) {
+		if (snd_config_get_string(conf, &str)) {
+			if (snd_config_get_id(conf, &id) >= 0)
+				SNDERR("Invalid field %s", id);
+			return -EINVAL;
+		}
+		err = snd_card_get_index(str);
+		if (err < 0) {
+			SNDERR("Cannot get card index for %s", str);
+			return err;
+		}
+		v = err;
+	}
+	if (v < 0 || v > INT_MAX)
+		return -EINVAL;
+	return v;
 }
 
 /**
@@ -419,7 +449,6 @@ int snd_func_concat(snd_config_t **dst, snd_config_t *root, snd_config_t *src,
 				tmp = realloc(res, len + len1 + 1);
 				if (tmp == NULL) {
 					free(ptr);
-					free(res);
 					err = -ENOMEM;
 					goto __error;
 				}
@@ -440,8 +469,8 @@ int snd_func_concat(snd_config_t **dst, snd_config_t *root, snd_config_t *src,
 	err = snd_config_get_id(src, &id);
 	if (err >= 0)
 		err = snd_config_imake_string(dst, id, res);
-	free(res);
       __error:
+	free(res);
 	return err;
 }
 #ifndef DOC_HIDDEN
@@ -616,6 +645,28 @@ static int string_from_integer(char **dst, long v)
 }
 #endif
 
+int _snd_func_private_data(snd_config_t **dst, snd_config_t *src,
+			   snd_config_t **private_data, const char *id)
+{
+	int err;
+
+	if (*private_data == NULL)
+		return snd_config_copy(dst, src);
+	if (snd_config_get_type(*private_data) == SND_CONFIG_TYPE_COMPOUND) {
+		err = snd_config_search(*private_data, id, private_data);
+		if (err)
+			goto notfound;
+	}
+	err = snd_config_test_id(*private_data, id);
+	if (err) {
+notfound:
+		SNDERR("field %s not found", id);
+		return -EINVAL;
+	}
+	return 0;
+}
+
+
 /**
  * \brief Returns the string from \c private_data.
  * \param dst The function puts the handle to the result configuration node
@@ -639,13 +690,9 @@ int snd_func_private_string(snd_config_t **dst, snd_config_t *root ATTRIBUTE_UNU
 	int err;
 	const char *str, *id;
 
-	if (private_data == NULL)
-		return snd_config_copy(dst, src);
-	err = snd_config_test_id(private_data, "string");
-	if (err) {
-		SNDERR("field string not found");
-		return -EINVAL;
-	}
+	err = _snd_func_private_data(dst, src, &private_data, "string");
+	if (err)
+		return err;
 	err = snd_config_get_string(private_data, &str);
 	if (err < 0) {
 		SNDERR("field string is not a string");
@@ -658,6 +705,47 @@ int snd_func_private_string(snd_config_t **dst, snd_config_t *root ATTRIBUTE_UNU
 }
 #ifndef DOC_HIDDEN
 SND_DLSYM_BUILD_VERSION(snd_func_private_string, SND_CONFIG_DLSYM_VERSION_EVALUATE);
+#endif
+
+/**
+ * \brief Returns the integer from \c private_data.
+ * \param dst The function puts the handle to the result configuration node
+ *            (with type integer) at the address specified by \p dst.
+ * \param root Handle to the root source node.
+ * \param src Handle to the source node.
+ * \param private_data Handle to the \c private_data node (type integer,
+ *                     id "integer").
+ * \return A non-negative value if successful, otherwise a negative error code.
+ *
+ * Example:
+\code
+	{
+		@func private_integer
+	}
+\endcode
+ */
+int snd_func_private_integer(snd_config_t **dst, snd_config_t *root ATTRIBUTE_UNUSED,
+			     snd_config_t *src, snd_config_t *private_data)
+{
+	int err;
+	const char *id;
+	long val;
+
+	err = _snd_func_private_data(dst, src, &private_data, "integer");
+	if (err)
+		return err;
+	err = snd_config_get_integer(private_data, &val);
+	if (err < 0) {
+		SNDERR("field integer is not a string");
+		return err;
+	}
+	err = snd_config_get_id(src, &id);
+	if (err >= 0)
+		err = snd_config_imake_integer(dst, id, val);
+	return err;
+}
+#ifndef DOC_HIDDEN
+SND_DLSYM_BUILD_VERSION(snd_func_private_integer, SND_CONFIG_DLSYM_VERSION_EVALUATE);
 #endif
 
 #ifndef DOC_HIDDEN

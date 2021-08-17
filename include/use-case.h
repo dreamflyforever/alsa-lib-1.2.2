@@ -257,6 +257,8 @@ int snd_use_case_get_list(snd_use_case_mgr_t *uc_mgr,
  *   - NULL 		- return current card
  *   - _verb		- return current verb
  *   - _file		- return configuration file loaded for current card
+ *   - _alibcfg		- return private alsa-lib's configuration for current card
+ *   - _alibpref	- return private alsa-lib's configuration device prefix for current card
  *
  *   - [=]{NAME}[/[{modifier}|{/device}][/{verb}]]
  *                      - value identifier {NAME}
@@ -418,7 +420,10 @@ int snd_use_case_geti(snd_use_case_mgr_t *uc_mgr,
  * \return Zero if success, otherwise a negative error code
  *
  * Known identifiers:
+ *   - _fboot			- execute the fixed boot sequence (value = NULL)
  *   - _boot			- execute the boot sequence (value = NULL)
+ *				   - only when driver controls identifiers are changed
+ *				     (otherwise the old control values are restored)
  *   - _defaults		- execute the 'defaults' sequence (value = NULL)
  *   - _verb			- set current verb = value
  *   - _enadev			- enable given device = value

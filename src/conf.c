@@ -887,7 +887,7 @@ static inline int get_hexachar(input_t *input)
 	if (c >= '0' && c <= '9') num |= (c - '0') << 0;
 	else if (c >= 'a' && c <= 'f') num |= (c - 'a') << 0;
 	else if (c >= 'A' && c <= 'F') num |= (c - 'A') << 0;
-	return c;
+	return num;
 }
 
 static int get_quotedchar(input_t *input)
@@ -1508,6 +1508,7 @@ static int parse_defs(snd_config_t *parent, input_t *input, int skip, int overri
 
 static void string_print(char *str, int id, snd_output_t *out)
 {
+	int q;
 	unsigned char *p = (unsigned char *)str;
 	if (!p || !*p) {
 		snd_output_puts(out, "''");
@@ -1549,7 +1550,8 @@ static void string_print(char *str, int id, snd_output_t *out)
 	snd_output_puts(out, str);
 	return;
  quoted:
-	snd_output_putc(out, '\'');
+	q = strchr(str, '\'') ? '"' : '\'';
+	snd_output_putc(out, q);
 	p = (unsigned char *)str;
 	while (*p) {
 		int c;
@@ -1579,30 +1581,39 @@ static void string_print(char *str, int id, snd_output_t *out)
 			snd_output_putc(out, '\\');
 			snd_output_putc(out, 'f');
 			break;
-		case '\'':
-			snd_output_putc(out, '\\');
-			snd_output_putc(out, c);
-			break;
 		default:
-			if (c >= 32 && c <= 126 && c != '\'')
+			if (c == q) {
+				snd_output_putc(out, '\\');
 				snd_output_putc(out, c);
-			else
-				snd_output_printf(out, "\\%04o", c);
+			} else {
+				if (c >= 32 && c <= 126)
+					snd_output_putc(out, c);
+				else
+					snd_output_printf(out, "\\%04o", c);
+			}
 			break;
 		}
 		p++;
 	}
-	snd_output_putc(out, '\'');
+	snd_output_putc(out, q);
+}
+
+static void level_print(snd_output_t *out, unsigned int level)
+{
+	char a[level + 1];
+	memset(a, '\t', level);
+	a[level] = '\0';
+	snd_output_puts(out, a);
 }
 
 static int _snd_config_save_children(snd_config_t *config, snd_output_t *out,
-				     unsigned int level, unsigned int joins);
+				     unsigned int level, unsigned int joins,
+				     int array);
 
-static int _snd_config_save_node_value(snd_config_t *n, snd_output_t *out,
-				       unsigned int level)
+int _snd_config_save_node_value(snd_config_t *n, snd_output_t *out,
+				unsigned int level)
 {
-	int err;
-	unsigned int k;
+	int err, array;
 	switch (n->type) {
 	case SND_CONFIG_TYPE_INTEGER:
 		snd_output_printf(out, "%ld", n->u.integer);
@@ -1620,15 +1631,14 @@ static int _snd_config_save_node_value(snd_config_t *n, snd_output_t *out,
 		SNDERR("cannot save runtime pointer type");
 		return -EINVAL;
 	case SND_CONFIG_TYPE_COMPOUND:
-		snd_output_putc(out, '{');
+		array = snd_config_is_array(n);
+		snd_output_putc(out, array ? '[' : '{');
 		snd_output_putc(out, '\n');
-		err = _snd_config_save_children(n, out, level + 1, 0);
+		err = _snd_config_save_children(n, out, level + 1, 0, array);
 		if (err < 0)
 			return err;
-		for (k = 0; k < level; ++k) {
-			snd_output_putc(out, '\t');
-		}
-		snd_output_putc(out, '}');
+		level_print(out, level);
+		snd_output_putc(out, array ? ']' : '}');
 		break;
 	}
 	return 0;
@@ -1645,9 +1655,9 @@ static void id_print(snd_config_t *n, snd_output_t *out, unsigned int joins)
 }
 
 static int _snd_config_save_children(snd_config_t *config, snd_output_t *out,
-				     unsigned int level, unsigned int joins)
+				     unsigned int level, unsigned int joins,
+				     int array)
 {
-	unsigned int k;
 	int err;
 	snd_config_iterator_t i, next;
 	assert(config && out);
@@ -1655,20 +1665,19 @@ static int _snd_config_save_children(snd_config_t *config, snd_output_t *out,
 		snd_config_t *n = snd_config_iterator_entry(i);
 		if (n->type == SND_CONFIG_TYPE_COMPOUND &&
 		    n->u.compound.join) {
-			err = _snd_config_save_children(n, out, level, joins + 1);
+			err = _snd_config_save_children(n, out, level, joins + 1, 0);
 			if (err < 0)
 				return err;
 			continue;
 		}
-		for (k = 0; k < level; ++k) {
-			snd_output_putc(out, '\t');
-		}
-		id_print(n, out, joins);
+		level_print(out, level);
+		if (!array) {
+			id_print(n, out, joins);
+			snd_output_putc(out, ' ');
 #if 0
-		snd_output_putc(out, ' ');
-		snd_output_putc(out, '=');
+			snd_output_putc(out, '=');
 #endif
-		snd_output_putc(out, ' ');
+		}
 		err = _snd_config_save_node_value(n, out, level);
 		if (err < 0)
 			return err;
@@ -1688,8 +1697,9 @@ static int _snd_config_save_children(snd_config_t *config, snd_output_t *out,
  * \param src Handle to the source node. Must not be the same as \a dst.
  * \return Zero if successful, otherwise a negative error code.
  *
- * If both nodes are compounds, the source compound node members are
- * appended to the destination compound node.
+ * If both nodes are compounds, the source compound node members will
+ * be moved to the destination compound node. The original destination
+ * compound node members will be deleted (overwritten).
  *
  * If the destination node is a compound and the source node is
  * an ordinary type, the compound members are deleted (including
@@ -1704,8 +1714,13 @@ static int _snd_config_save_children(snd_config_t *config, snd_output_t *out,
 int snd_config_substitute(snd_config_t *dst, snd_config_t *src)
 {
 	assert(dst && src);
+	if (dst->type == SND_CONFIG_TYPE_COMPOUND) {
+		int err = snd_config_delete_compound_members(dst);
+		if (err < 0)
+			return err;
+	}
 	if (dst->type == SND_CONFIG_TYPE_COMPOUND &&
-	    src->type == SND_CONFIG_TYPE_COMPOUND) {	/* append */
+	    src->type == SND_CONFIG_TYPE_COMPOUND) {	/* overwrite */
 		snd_config_iterator_t i, next;
 		snd_config_for_each(i, next, src) {
 			snd_config_t *n = snd_config_iterator_entry(i);
@@ -1713,11 +1728,6 @@ int snd_config_substitute(snd_config_t *dst, snd_config_t *src)
 		}
 		src->u.compound.fields.next->prev = &dst->u.compound.fields;
 		src->u.compound.fields.prev->next = &dst->u.compound.fields;
-	} else if (dst->type == SND_CONFIG_TYPE_COMPOUND) {
-		int err;
-		err = snd_config_delete_compound_members(dst);
-		if (err < 0)
-			return err;
 	}
 	free(dst->id);
 	dst->id = src->id;
@@ -1802,9 +1812,10 @@ static int check_array_item(const char *id, int index)
 }
 
 /**
- * \brief Returns if the compound is an array.
+ * \brief Returns if the compound is an array (and count of items).
  * \param config Handle to the configuration node.
- * \return A positive value when true, zero when false, otherwise a negative error code.
+ * \return A count of items in array, zero when the compound is not an array,
+ *         otherwise a negative error code.
  */
 int snd_config_is_array(const snd_config_t *config)
 {
@@ -1822,7 +1833,20 @@ int snd_config_is_array(const snd_config_t *config)
 			return 0;
 		idx++;
 	}
-	return 1;
+	return idx;
+}
+
+/**
+ * \brief Returns if the compound has no fields (is empty).
+ * \param config Handle to the configuration node.
+ * \return A positive value when true, zero when false, otherwise a negative error code.
+ */
+int snd_config_is_empty(const snd_config_t *config)
+{
+	assert(config);
+	if (config->type != SND_CONFIG_TYPE_COMPOUND)
+		return -EINVAL;
+	return list_empty(&config->u.compound.fields);
 }
 
 /**
@@ -1970,11 +1994,14 @@ int _snd_config_load_with_include(snd_config_t *config, snd_input_t *in,
 		SNDERR("%s:%d:%d:%s", fd->name ? fd->name : "_toplevel_", fd->line, fd->column, str);
 		goto _end;
 	}
-	if (get_char(&input) != LOCAL_UNEXPECTED_EOF) {
+	err = get_char(&input);
+	fd = input.current;
+	if (err != LOCAL_UNEXPECTED_EOF) {
 		SNDERR("%s:%d:%d:Unexpected }", fd->name ? fd->name : "", fd->line, fd->column);
 		err = -EINVAL;
 		goto _end;
 	}
+	err = 0;
  _end:
 	while (fd->next) {
 		fd_next = fd->next;
@@ -2146,6 +2173,103 @@ int snd_config_add_before(snd_config_t *before, snd_config_t *child)
 	}
 	child->parent = parent;
 	list_insert(&child->list, before->list.prev, &before->list);
+	return 0;
+}
+
+/*
+ * append all src items to the end of dst arrray
+ */
+static int _snd_config_array_merge(snd_config_t *dst, snd_config_t *src, int index)
+{
+	snd_config_iterator_t si, snext;
+	int err;
+
+	snd_config_for_each(si, snext, src) {
+		snd_config_t *sn = snd_config_iterator_entry(si);
+		char id[16];
+		snd_config_remove(sn);
+		snprintf(id, sizeof(id), "%d", index++);
+		err = snd_config_set_id(sn, id);
+		if (err < 0) {
+			snd_config_delete(sn);
+			return err;
+		}
+		sn->parent = dst;
+		list_add_tail(&sn->list, &dst->u.compound.fields);
+	}
+	snd_config_delete(src);
+	return 0;
+}
+
+/**
+ * \brief In-place merge of two config handles
+ * \param dst[out] Config handle for the merged contents
+ * \param src[in] Config handle to merge into dst (may be NULL)
+ * \param override[in] Override flag
+ * \return Zero if successful, otherwise a negative error code.
+ *
+ * This function merges all fields from the source compound to the destination compound.
+ * When the \a override flag is set, the related subtree in \a dst is replaced from \a src.
+ *
+ * When \a override is not set, the child compounds are traversed and merged.
+ *
+ * The configuration elements other than compounds are always substituted (overwritten)
+ * from the \a src config handle.
+ *
+ * The src handle is deleted.
+ *
+ * Note: On error, config handles may be modified.
+ *
+ * \par Errors:
+ * <dl>
+ * <dt>-EEXIST<dd>identifier already exists (!overwrite)
+ * <dt>-ENOMEM<dd>not enough memory
+ * </dl>
+ */
+int snd_config_merge(snd_config_t *dst, snd_config_t *src, int override)
+{
+	snd_config_iterator_t di, si, dnext, snext;
+	bool found;
+	int err, array;
+
+	assert(dst);
+	if (src == NULL)
+		return 0;
+	if (dst->type != SND_CONFIG_TYPE_COMPOUND || src->type != SND_CONFIG_TYPE_COMPOUND)
+		return snd_config_substitute(dst, src);
+	array = snd_config_is_array(dst);
+	if (array && snd_config_is_array(src))
+		return _snd_config_array_merge(dst, src, array);
+	snd_config_for_each(si, snext, src) {
+		snd_config_t *sn = snd_config_iterator_entry(si);
+		found = false;
+		snd_config_for_each(di, dnext, dst) {
+			snd_config_t *dn = snd_config_iterator_entry(di);
+			if (strcmp(sn->id, dn->id) == 0) {
+				if (override ||
+				    sn->type != SND_CONFIG_TYPE_COMPOUND ||
+				    dn->type != SND_CONFIG_TYPE_COMPOUND) {
+					snd_config_remove(sn);
+					err = snd_config_substitute(dn, sn);
+					if (err < 0)
+						return err;
+				} else {
+					err = snd_config_merge(dn, sn, 0);
+					if (err < 0)
+						return err;
+				}
+				found = true;
+				break;
+			}
+		}
+		if (!found) {
+			/* move config from src to dst */
+			snd_config_remove(sn);
+			sn->parent = dst;
+			list_add_tail(&sn->list, &dst->u.compound.fields);
+		}
+	}
+	snd_config_delete(src);
 	return 0;
 }
 
@@ -2466,6 +2590,103 @@ int snd_config_make_compound(snd_config_t **config, const char *id,
 		return err;
 	(*config)->u.compound.join = join;
 	return 0;
+}
+
+/**
+ * \brief Creates an empty compound configuration node in the path.
+ * \param[out] config The function puts the handle to the new or
+ *		      existing compound node at the address specified
+ *		      by \a config.
+ * \param[in] root The id of the new node.
+ * \param[in] key The id of the new node.
+ * \param[in] join Join flag.
+ * \param[in] override Override flag.
+ * \return Zero if successful, otherwise a negative error code.
+ *
+ * This function creates a new empty node of type
+ * #SND_CONFIG_TYPE_COMPOUND if the path does not exist. Otherwise,
+ * the node from the current configuration tree is returned without
+ * any modification. The \a join argument is ignored in this case.
+ *
+ * \a join determines how the compound node's id is printed when the
+ * configuration is saved to a text file.  For example, if the join flag
+ * of compound node \c a is zero, the output will look as follows:
+ * \code
+ * a {
+ *     b "hello"
+ *     c 42
+ * }
+ * \endcode
+ * If, however, the join flag of \c a is nonzero, its id will be joined
+ * with its children's ids, like this:
+ * \code
+ * a.b "hello"
+ * a.c 42
+ * \endcode
+ * An \e empty compound node with its join flag set would result in no
+ * output, i.e., after saving and reloading the configuration file, that
+ * compound node would be lost.
+ *
+ * \par Errors:
+ * <dl>
+ * <dt>-ENOMEM<dd>Out of memory.
+ * <dt>-EACCESS<dd>Path exists, but it's not a compound (!override)
+ * </dl>
+ */
+int snd_config_make_path(snd_config_t **config, snd_config_t *root,
+			 const char *key, int join, int override)
+{
+	snd_config_t *n;
+	const char *p;
+	int err;
+
+	while (1) {
+		p = strchr(key, '.');
+		if (p) {
+			err = _snd_config_search(root, key, p - key, &n);
+			if (err < 0) {
+				size_t l = p - key;
+				char *s = malloc(l + 1);
+				if (s == NULL)
+					return -ENOMEM;
+				strncpy(s, key, l);
+				s[l] = '\0';
+				err = snd_config_make_compound(&n, s, join);
+				free(s);
+				if (err < 0)
+					return err;
+				err = snd_config_add(root, n);
+				if (err < 0)
+					return err;
+			}
+			root = n;
+			key = p + 1;
+		} else {
+			err = _snd_config_search(root, key, -1, config);
+			if (err == 0) {
+				if ((*config)->type != SND_CONFIG_TYPE_COMPOUND) {
+					if (override) {
+						err = snd_config_delete(*config);
+						if (err < 0)
+							return err;
+						goto __make;
+					} else {
+						return -EACCES;
+					}
+				}
+				return 0;
+			}
+__make:
+			err = snd_config_make_compound(&n, key, join);
+			if (err < 0)
+				return err;
+			err = snd_config_add(root, n);
+			if (err < 0)
+				return err;
+			*config = n;
+			return 0;
+		}
+	}
 }
 
 /**
@@ -3124,10 +3345,12 @@ int snd_config_test_id(const snd_config_t *config, const char *id)
 int snd_config_save(snd_config_t *config, snd_output_t *out)
 {
 	assert(config && out);
-	if (config->type == SND_CONFIG_TYPE_COMPOUND)
-		return _snd_config_save_children(config, out, 0, 0);
-	else
+	if (config->type == SND_CONFIG_TYPE_COMPOUND) {
+		int array = snd_config_is_array(config);
+		return _snd_config_save_children(config, out, 0, 0, array);
+	} else {
 		return _snd_config_save_node_value(config, out, 0);
+	}
 }
 
 /*
@@ -3878,6 +4101,70 @@ static int config_file_load_user(snd_config_t *root, const char *fn, int errors)
 	return err;
 }
 
+static int config_file_load_user_all(snd_config_t *_root, snd_config_t *_file, int errors)
+{
+	snd_config_t *file = _file, *root = _root, *n;
+	char *name, *name2, *remain, *rname = NULL;
+	int err;
+
+	if (snd_config_get_type(_file) == SND_CONFIG_TYPE_COMPOUND) {
+		if ((err = snd_config_search(_file, "file", &file)) < 0) {
+			SNDERR("Field file not found");
+			return err;
+		}
+		if ((err = snd_config_search(_file, "root", &root)) >= 0) {
+			err = snd_config_get_ascii(root, &rname);
+			if (err < 0) {
+				SNDERR("Field root is bad");
+				return err;
+			}
+			err = snd_config_make_compound(&root, rname, 0);
+			if (err < 0)
+				return err;
+		}
+	}
+	if ((err = snd_config_get_ascii(file, &name)) < 0)
+		goto _err;
+	name2 = name;
+	remain = strstr(name, "|||");
+	while (1) {
+		if (remain) {
+			*remain = '\0';
+			remain += 3;
+		}
+		err = config_file_load_user(root, name2, errors);
+		if (err < 0)
+			goto _err;
+		if (err == 0)	/* first hit wins */
+			break;
+		if (!remain)
+			break;
+		name2 = remain;
+		remain = strstr(remain, "|||");
+	}
+_err:
+	if (root != _root) {
+		if (err == 0) {
+			if (snd_config_get_type(root) == SND_CONFIG_TYPE_COMPOUND) {
+				if (snd_config_is_empty(root))
+					goto _del;
+			}
+			err = snd_config_make_path(&n, _root, rname, 0, 1);
+			if (err < 0)
+				goto _del;
+			err = snd_config_substitute(n, root);
+			if (err == 0)
+				goto _fin;
+		}
+_del:
+		snd_config_delete(root);
+	}
+_fin:
+	free(name);
+	free(rname);
+	return err;
+}
+
 /**
  * \brief Loads and parses the given configurations files.
  * \param[in] root Handle to the root configuration node.
@@ -3898,12 +4185,7 @@ int snd_config_hook_load(snd_config_t *root, snd_config_t *config, snd_config_t 
 
 	assert(root && dst);
 	if ((err = snd_config_search(config, "errors", &n)) >= 0) {
-		char *tmp;
-		err = snd_config_get_ascii(n, &tmp);
-		if (err < 0)
-			return err;
-		errors = snd_config_get_bool_ascii(tmp);
-		free(tmp);
+		errors = snd_config_get_bool(n);
 		if (errors < 0) {
 			SNDERR("Invalid bool value in field errors");
 			return errors;
@@ -3934,27 +4216,9 @@ int snd_config_hook_load(snd_config_t *root, snd_config_t *config, snd_config_t 
 				goto _err;
 			}
 			if (i == idx) {
-				char *name, *name2, *remain;
-				if ((err = snd_config_get_ascii(n, &name)) < 0)
+				err = config_file_load_user_all(root, n, errors);
+				if (err < 0)
 					goto _err;
-				name2 = name;
-				remain = strstr(name, "|||");
-				while (1) {
-					if (remain) {
-						*remain = '\0';
-						remain += 3;
-					}
-					err = config_file_load_user(root, name2, errors);
-					if (err < 0)
-						goto _err;
-					if (err == 0)	/* first hit wins */
-						break;
-					if (!remain)
-						break;
-					name2 = remain;
-					remain = strstr(remain, "|||");
-				}
-				free(name);
 				idx++;
 				hit = 1;
 			}
@@ -3974,6 +4238,75 @@ SND_DLSYM_BUILD_VERSION(snd_config_hook_load, SND_CONFIG_DLSYM_VERSION_HOOK);
 int snd_determine_driver(int card, char **driver);
 #endif
 
+snd_config_t *_snd_config_hook_private_data(int card, const char *driver)
+{
+	snd_config_t *private_data, *v;
+	int err;
+
+	err = snd_config_make_compound(&private_data, NULL, 0);
+	if (err < 0)
+		goto __err;
+	err = snd_config_imake_integer(&v, "integer", card);
+	if (err < 0)
+		goto __err;
+	err = snd_config_add(private_data, v);
+	if (err < 0) {
+		snd_config_delete(v);
+		goto __err;
+	}
+	err = snd_config_imake_string(&v, "string", driver);
+	if (err < 0)
+		goto __err;
+	err = snd_config_add(private_data, v);
+	if (err < 0) {
+		snd_config_delete(v);
+		goto __err;
+	}
+	return private_data;
+
+__err:
+	snd_config_delete(private_data);
+	return NULL;
+}
+
+static int _snd_config_hook_table(snd_config_t *root, snd_config_t *config, snd_config_t *private_data)
+{
+	snd_config_t *n, *tn;
+	const char *id;
+	int err;
+
+	if (snd_config_search(config, "table", &n) < 0)
+		return 0;
+	if ((err = snd_config_expand(n, root, NULL, private_data, &n)) < 0) {
+		SNDERR("Unable to expand table compound");
+		return err;
+	}
+	if (snd_config_search(n, "id", &tn) < 0 ||
+	    snd_config_get_string(tn, &id) < 0) {
+		SNDERR("Unable to find field table.id");
+		snd_config_delete(n);
+		return -EINVAL;
+	}
+	if (snd_config_search(n, "value", &tn) < 0 ||
+	    snd_config_get_type(tn) != SND_CONFIG_TYPE_STRING) {
+		SNDERR("Unable to find field table.value");
+		snd_config_delete(n);
+		return -EINVAL;
+	}
+	snd_config_remove(tn);
+	if ((err = snd_config_set_id(tn, id)) < 0) {
+		snd_config_delete(tn);
+		snd_config_delete(n);
+		return err;
+	}
+	snd_config_delete(n);
+	if ((err = snd_config_add(root, tn)) < 0) {
+		snd_config_delete(tn);
+		return err;
+	}
+	return 0;
+}
+
 /**
  * \brief Loads and parses the given configurations files for each
  *        installed sound card.
@@ -3992,22 +4325,31 @@ int snd_determine_driver(int card, char **driver);
 int snd_config_hook_load_for_all_cards(snd_config_t *root, snd_config_t *config, snd_config_t **dst, snd_config_t *private_data ATTRIBUTE_UNUSED)
 {
 	int card = -1, err;
+	snd_config_t *loaded;	// trace loaded cards
 	
+	err = snd_config_top(&loaded);
+	if (err < 0)
+		return err;
 	do {
 		err = snd_card_next(&card);
 		if (err < 0)
-			return err;
+			goto __fin_err;
 		if (card >= 0) {
-			snd_config_t *n, *private_data = NULL;
+			snd_config_t *n, *m, *private_data = NULL;
 			const char *driver;
 			char *fdriver = NULL;
+			bool load;
 			err = snd_determine_driver(card, &fdriver);
 			if (err < 0)
-				return err;
+				goto __fin_err;
 			if (snd_config_search(root, fdriver, &n) >= 0) {
-				if (snd_config_get_string(n, &driver) < 0)
+				if (snd_config_get_string(n, &driver) < 0) {
+					if (snd_config_get_type(n) == SND_CONFIG_TYPE_COMPOUND) {
+						snd_config_get_id(n, &driver);
+						goto __std;
+					}
 					goto __err;
-				assert(driver);
+				}
 				while (1) {
 					char *s = strchr(driver, '.');
 					if (s == NULL)
@@ -4019,20 +4361,44 @@ int snd_config_hook_load_for_all_cards(snd_config_t *root, snd_config_t *config,
 			} else {
 				driver = fdriver;
 			}
-			err = snd_config_imake_string(&private_data, "string", driver);
+		      __std:
+			load = true;
+			err = snd_config_imake_integer(&m, driver, 1);
 			if (err < 0)
 				goto __err;
-			err = snd_config_hook_load(root, config, &n, private_data);
+			err = snd_config_add(loaded, m);
+			if (err < 0) {
+				if (err == -EEXIST) {
+					snd_config_delete(m);
+					load = false;
+				} else {
+					goto __err;
+				}
+			}
+			private_data = _snd_config_hook_private_data(card, driver);
+			if (!private_data) {
+				err = -ENOMEM;
+				goto __err;
+			}
+			err = _snd_config_hook_table(root, config, private_data);
+			if (err < 0)
+				goto __err;
+			if (load)
+				err = snd_config_hook_load(root, config, &n, private_data);
 		      __err:
 			if (private_data)
 				snd_config_delete(private_data);
 			free(fdriver);
 			if (err < 0)
-				return err;
+				goto __fin_err;
 		}
 	} while (card >= 0);
+	snd_config_delete(loaded);
 	*dst = NULL;
 	return 0;
+__fin_err:
+	snd_config_delete(loaded);
+	return err;
 }
 #ifndef DOC_HIDDEN
 SND_DLSYM_BUILD_VERSION(snd_config_hook_load_for_all_cards, SND_CONFIG_DLSYM_VERSION_HOOK);
@@ -4744,13 +5110,8 @@ static int _snd_config_evaluate(snd_config_t *src,
 			if (err < 0)
 				SNDERR("function %s returned error: %s", func_name, snd_strerror(err));
 			snd_dlclose(h);
-			if (err >= 0 && eval) {
-				/* substitute merges compound members */
-				/* we don't want merging at all */
-				err = snd_config_delete_compound_members(src);
-				if (err >= 0)
-					err = snd_config_substitute(src, eval);
-			}
+			if (err >= 0 && eval)
+				err = snd_config_substitute(src, eval);
 		}
 	       _errbuf:
 		free(buf);
@@ -5069,6 +5430,8 @@ static int parse_args(snd_config_t *subs, const char *str, snd_config_t *defs)
 		const char *new = str;
 		const char *tmp;
 		char *val = NULL;
+
+		sub = NULL;
 		err = parse_arg(&new, &varlen, &val);
 		if (err < 0)
 			goto _err;
@@ -5093,6 +5456,7 @@ static int parse_args(snd_config_t *subs, const char *str, snd_config_t *defs)
 		err = snd_config_search(subs, var, &sub);
 		if (err >= 0)
 			snd_config_delete(sub);
+		sub = NULL;
 		err = snd_config_search(def, "type", &typ);
 		if (err < 0) {
 		_invalid_type:
@@ -5158,6 +5522,8 @@ static int parse_args(snd_config_t *subs, const char *str, snd_config_t *defs)
 		err = snd_config_add(subs, sub);
 		if (err < 0) {
 		_err:
+			if (sub)
+				snd_config_delete(sub);
 			free(val);
 			return err;
 		}

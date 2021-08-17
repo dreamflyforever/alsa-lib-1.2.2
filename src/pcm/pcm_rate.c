@@ -561,17 +561,16 @@ snd_pcm_rate_read_areas1(snd_pcm_t *pcm,
 
 static inline void snd_pcm_rate_sync_hwptr0(snd_pcm_t *pcm, snd_pcm_uframes_t slave_hw_ptr)
 {
-	snd_pcm_rate_t *rate = pcm->private_data;
-
-	snd_pcm_sframes_t slave_hw_ptr_diff = slave_hw_ptr - rate->last_slave_hw_ptr;
+	snd_pcm_rate_t *rate;
+	snd_pcm_sframes_t slave_hw_ptr_diff;
 	snd_pcm_sframes_t last_slave_hw_ptr_frac;
 
 	if (pcm->stream != SND_PCM_STREAM_PLAYBACK)
 		return;
 
-	if (slave_hw_ptr_diff < 0)
-		slave_hw_ptr_diff += rate->gen.slave->boundary; /* slave boundary wraparound */
-	else if (slave_hw_ptr_diff == 0)
+	rate = pcm->private_data;
+	slave_hw_ptr_diff = pcm_frame_diff(slave_hw_ptr, rate->last_slave_hw_ptr, rate->gen.slave->boundary);
+	if (slave_hw_ptr_diff == 0)
 		return;
 	last_slave_hw_ptr_frac = rate->last_slave_hw_ptr % rate->gen.slave->period_size;
 	/* While handling fraction part fo slave period, rounded value will be
@@ -612,11 +611,7 @@ static snd_pcm_uframes_t snd_pcm_rate_playback_internal_delay(snd_pcm_t *pcm)
 {
 	snd_pcm_rate_t *rate = pcm->private_data;
 
-	if (rate->appl_ptr < rate->last_commit_ptr) {
-		return rate->appl_ptr - rate->last_commit_ptr + pcm->boundary;
-	} else {
-		return rate->appl_ptr - rate->last_commit_ptr;
-	}
+	return pcm_frame_diff(rate->appl_ptr, rate->last_commit_ptr, pcm->boundary);
 }
 
 static int snd_pcm_rate_delay(snd_pcm_t *pcm, snd_pcm_sframes_t *delayp)
@@ -637,7 +632,7 @@ static int snd_pcm_rate_delay(snd_pcm_t *pcm, snd_pcm_sframes_t *delayp)
 				+ snd_pcm_rate_playback_internal_delay(pcm);
 	} else {
 		*delayp = rate->ops.output_frames(rate->obj, slave_delay)
-				+ snd_pcm_mmap_capture_hw_avail(pcm);
+				+ snd_pcm_mmap_capture_delay(pcm);
 	}
 	return 0;
 }
@@ -746,7 +741,6 @@ static int snd_pcm_rate_commit_area(snd_pcm_t *pcm, snd_pcm_rate_t *rate,
 		if (result < 0)
 			return result;
 	      __partial:
-		xfer = 0;
 		cont = slave_frames;
 		if (cont > slave_size)
 			cont = slave_size;
@@ -846,7 +840,6 @@ static int snd_pcm_rate_grab_next_period(snd_pcm_t *pcm, snd_pcm_uframes_t hw_of
 		if (result < 0)
 			return result;
 	      __partial:
-		xfer = 0;
 		cont = slave_frames;
 		if (cont > rate->gen.slave->period_size)
 			cont = rate->gen.slave->period_size;
@@ -928,10 +921,7 @@ static int snd_pcm_rate_sync_playback_area(snd_pcm_t *pcm, snd_pcm_uframes_t app
 	if (slave_size < 0)
 		return slave_size;
 
-	if (appl_ptr < rate->last_commit_ptr)
-		xfer = appl_ptr - rate->last_commit_ptr + pcm->boundary;
-	else
-		xfer = appl_ptr - rate->last_commit_ptr;
+	xfer = pcm_frame_diff(appl_ptr, rate->last_commit_ptr, pcm->boundary);
 	while (xfer >= pcm->period_size &&
 	       (snd_pcm_uframes_t)slave_size >= rate->gen.slave->period_size) {
 		err = snd_pcm_rate_commit_next_period(pcm, rate->last_commit_ptr % pcm->buffer_size);
@@ -966,29 +956,18 @@ static snd_pcm_sframes_t snd_pcm_rate_mmap_commit(snd_pcm_t *pcm,
 	return size;
 }
 
-static snd_pcm_sframes_t snd_pcm_rate_avail_update(snd_pcm_t *pcm)
+static snd_pcm_sframes_t snd_pcm_rate_avail_update_capture(snd_pcm_t *pcm,
+							   snd_pcm_sframes_t slave_size)
 {
 	snd_pcm_rate_t *rate = pcm->private_data;
 	snd_pcm_t *slave = rate->gen.slave;
-	snd_pcm_sframes_t slave_size;
-
-	slave_size = snd_pcm_avail_update(slave);
-	if (slave_size < 0)
-		return slave_size;
-
-	if (pcm->stream == SND_PCM_STREAM_CAPTURE)
-		goto _capture;
-	snd_pcm_rate_sync_hwptr(pcm);
-	snd_pcm_rate_sync_playback_area(pcm, rate->appl_ptr);
-	return snd_pcm_mmap_avail(pcm);
- _capture: {
 	snd_pcm_uframes_t xfer, hw_offset, size;
 	
 	xfer = snd_pcm_mmap_capture_avail(pcm);
 	size = pcm->buffer_size - xfer;
 	hw_offset = snd_pcm_mmap_hw_offset(pcm);
 	while (size >= pcm->period_size &&
-	       (snd_pcm_uframes_t)slave_size >= rate->gen.slave->period_size) {
+	       (snd_pcm_uframes_t)slave_size >= slave->period_size) {
 		int err = snd_pcm_rate_grab_next_period(pcm, hw_offset);
 		if (err < 0)
 			return err;
@@ -996,13 +975,29 @@ static snd_pcm_sframes_t snd_pcm_rate_avail_update(snd_pcm_t *pcm)
 			return (snd_pcm_sframes_t)xfer;
 		xfer += pcm->period_size;
 		size -= pcm->period_size;
-		slave_size -= rate->gen.slave->period_size;
+		slave_size -= slave->period_size;
 		hw_offset += pcm->period_size;
 		hw_offset %= pcm->buffer_size;
 		snd_pcm_mmap_hw_forward(pcm, pcm->period_size);
 	}
 	return (snd_pcm_sframes_t)xfer;
- }
+}
+
+static snd_pcm_sframes_t snd_pcm_rate_avail_update(snd_pcm_t *pcm)
+{
+	snd_pcm_rate_t *rate = pcm->private_data;
+	snd_pcm_sframes_t slave_size;
+
+	slave_size = snd_pcm_avail_update(rate->gen.slave);
+	if (slave_size < 0)
+		return slave_size;
+
+	if (pcm->stream == SND_PCM_STREAM_CAPTURE)
+		return snd_pcm_rate_avail_update_capture(pcm, slave_size);
+
+	snd_pcm_rate_sync_hwptr(pcm);
+	snd_pcm_rate_sync_playback_area(pcm, rate->appl_ptr);
+	return snd_pcm_mmap_avail(pcm);
 }
 
 static int snd_pcm_rate_htimestamp(snd_pcm_t *pcm,
@@ -1060,9 +1055,7 @@ static int snd_pcm_rate_drain(snd_pcm_t *pcm)
 		sw_params.avail_min = 1;
 		snd_pcm_sw_params(rate->gen.slave, &sw_params);
 
-		size = rate->appl_ptr - rate->last_commit_ptr;
-		if (size > pcm->boundary)
-			size -= pcm->boundary;
+		size = pcm_frame_diff(rate->appl_ptr, rate->last_commit_ptr, pcm->boundary);
 		ofs = rate->last_commit_ptr % pcm->buffer_size;
 		while (size > 0) {
 			snd_pcm_uframes_t psize, spsize;
@@ -1164,12 +1157,8 @@ static int snd_pcm_rate_status(snd_pcm_t *pcm, snd_pcm_status_t * status)
 		status->avail = snd_pcm_mmap_playback_avail(pcm);
 		status->avail_max = rate->ops.input_frames(rate->obj, status->avail_max);
 	} else {
-		/* FIXME: Maybe possible to somthing similar to
-		 * snd_pcm_rate_playback_internal_delay()
-		 * for the capture case.
-		 */
 		status->delay = rate->ops.output_frames(rate->obj, status->delay)
-					+ snd_pcm_mmap_capture_hw_avail(pcm);
+					+ snd_pcm_mmap_capture_delay(pcm);
 		status->avail = snd_pcm_mmap_capture_avail(pcm);
 		status->avail_max = rate->ops.output_frames(rate->obj, status->avail_max);
 	}

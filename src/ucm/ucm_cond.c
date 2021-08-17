@@ -160,11 +160,12 @@ static int if_eval_regex_match(snd_use_case_mgr_t *uc_mgr, snd_config_t *eval)
 	if (err < 0)
 		return err;
 	err = regcomp(&re, s, options);
-	free(s);
 	if (err) {
-		uc_error("Regex '%s' compilation failed (code %d)", err);
+		uc_error("Regex '%s' compilation failed (code %d)", s, err);
+		free(s);
 		return -EINVAL;
 	}
+	free(s);
 
 	err = uc_mgr_get_substituted_value(uc_mgr, &s, string);
 	if (err < 0) {
@@ -269,6 +270,51 @@ static int if_eval_control_exists(snd_use_case_mgr_t *uc_mgr, snd_config_t *eval
 	return 1;
 }
 
+static int if_eval_path(snd_use_case_mgr_t *uc_mgr, snd_config_t *eval)
+{
+	const char *path, *mode = "";
+	int err, amode = F_OK;
+
+	if (uc_mgr->conf_format < 4) {
+		uc_error("Path condition is supported in v4+ syntax");
+		return -EINVAL;
+	}
+
+	err = get_string(eval, "Path", &path);
+	if (err < 0) {
+		uc_error("Path error (If.Condition.Path)");
+		return -EINVAL;
+	}
+
+	err = get_string(eval, "Mode", &mode);
+	if (err < 0 && err != -ENOENT) {
+		uc_error("Path error (If.Condition.Mode)");
+		return -EINVAL;
+	}
+
+	if (strncasecmp(mode, "exist", 5) == 0) {
+		amode = F_OK;
+	} else if (strcasecmp(mode, "read") == 0) {
+		amode = R_OK;
+	} else if (strcasecmp(mode, "write") == 0) {
+		amode = W_OK;
+	} else if (strcasecmp(mode, "exec") == 0) {
+		amode = X_OK;
+	} else {
+		uc_error("Path unknown mode (If.Condition.Mode)");
+		return -EINVAL;
+	}
+
+#ifdef HAVE_EACCESS
+	if (eaccess(path, amode))
+#else
+	if (access(path, amode))
+#endif
+		return 0;
+
+	return 1;
+}
+
 static int if_eval(snd_use_case_mgr_t *uc_mgr, snd_config_t *eval)
 {
 	const char *type;
@@ -296,6 +342,9 @@ static int if_eval(snd_use_case_mgr_t *uc_mgr, snd_config_t *eval)
 
 	if (strcmp(type, "RegexMatch") == 0)
 		return if_eval_regex_match(uc_mgr, eval);
+
+	if (strcmp(type, "Path") == 0)
+		return if_eval_path(uc_mgr, eval);
 
 	uc_error("unknown If.Condition.Type");
 	return -EINVAL;
